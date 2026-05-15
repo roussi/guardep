@@ -10,7 +10,7 @@ use crate::ecosystem::{Ecosystem, PackageRef};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub trait Resolver {
     fn resolve(&self, project_root: &Path) -> Result<Vec<PackageRef>>;
@@ -231,28 +231,77 @@ fn flush_yarn_stanza(
 
 /// Pick the right resolver based on which lockfile/manifest is present.
 /// Returns the file used so callers can report it.
+///
+/// When multiple manifests coexist in the same directory (e.g. a
+/// monorepo with both `package-lock.json` and `pnpm-lock.yaml`) we
+/// pick the first match in `CANDIDATES` order BUT print a warning
+/// listing every candidate that was found. Silent ambiguity makes
+/// "wrong tree audited" failures much harder to diagnose.
 pub fn auto_resolve(project_root: &Path) -> Result<(Vec<PackageRef>, &'static str)> {
-    // Probed in order; first match wins. npm-family lockfiles are
-    // probed first because they're cheap and the most common case.
     let candidates: &[(&str, &dyn Fn() -> Box<dyn Resolver>)] = &[
         ("package-lock.json", &|| Box::new(NpmLockResolver)),
         ("pnpm-lock.yaml", &|| Box::new(PnpmLockResolver)),
         ("yarn.lock", &|| Box::new(YarnLockResolver)),
         ("pom.xml", &|| Box::new(MavenTreeResolver)),
     ];
-    for (name, ctor) in candidates {
-        let path: PathBuf = project_root.join(name);
-        if path.exists() {
-            let resolver = ctor();
-            let pkgs = resolver.resolve(project_root)?;
-            return Ok((pkgs, name));
-        }
+
+    let present: Vec<&'static str> = candidates
+        .iter()
+        .filter(|(name, _)| project_root.join(name).exists())
+        .map(|(name, _)| *name)
+        .collect();
+
+    let chosen = present.first().copied();
+    let Some(chosen_name) = chosen else {
+        anyhow::bail!(
+            "no supported manifest in {} (looked for package-lock.json, \
+             pnpm-lock.yaml, yarn.lock, pom.xml)",
+            project_root.display()
+        );
+    };
+
+    if present.len() > 1 {
+        let other: Vec<&str> = present.iter().skip(1).copied().collect();
+        // tracing::warn isn't loud enough for a default-noisy scenario.
+        // Print to stderr directly so the user always sees it.
+        eprintln!(
+            "[guardep] multiple manifests found in {}: {}. Auditing {}; \
+             use --lockfile <name> to override.",
+            project_root.display(),
+            present.join(", "),
+            chosen_name
+        );
+        let _ = other; // suppression of unused warning under future restructure
     }
-    anyhow::bail!(
-        "no supported manifest in {} (looked for package-lock.json, \
-         pnpm-lock.yaml, yarn.lock, pom.xml)",
-        project_root.display()
-    )
+
+    let ctor = candidates
+        .iter()
+        .find(|(name, _)| *name == chosen_name)
+        .map(|(_, c)| c)
+        .expect("chosen_name came from candidates list");
+    let resolver = ctor();
+    let pkgs = resolver.resolve(project_root)?;
+    Ok((pkgs, chosen_name))
+}
+
+/// Like `auto_resolve` but with an explicit lockfile selection.
+/// Returns an error if the requested lockfile isn't present.
+pub fn resolve_with(project_root: &Path, lockfile: &str) -> Result<Vec<PackageRef>> {
+    let path = project_root.join(lockfile);
+    if !path.exists() {
+        anyhow::bail!("lockfile {} not found in {}", lockfile, project_root.display());
+    }
+    let resolver: Box<dyn Resolver> = match lockfile {
+        "package-lock.json" => Box::new(NpmLockResolver),
+        "pnpm-lock.yaml" => Box::new(PnpmLockResolver),
+        "yarn.lock" => Box::new(YarnLockResolver),
+        "pom.xml" => Box::new(MavenTreeResolver),
+        other => anyhow::bail!(
+            "unsupported lockfile `{other}` (try package-lock.json, \
+             pnpm-lock.yaml, yarn.lock, pom.xml)"
+        ),
+    };
+    resolver.resolve(project_root)
 }
 
 // ── PackageRef sort impls (used by all resolvers) ────────────────────────

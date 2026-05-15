@@ -86,7 +86,7 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
 
     let verdict_result = match resolved {
         Some(packages) => audit::evaluate_packages(&project_root, packages, false).await,
-        None => audit::evaluate_project(&project_root, false).await,
+        None => audit::evaluate_project(&project_root, false, None).await,
     };
 
     let verdict = match verdict_result {

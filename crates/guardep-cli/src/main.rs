@@ -74,9 +74,10 @@ enum Cmd {
         /// Group findings by package@version, joining advisory IDs with commas.
         #[arg(long)]
         collapse: bool,
-        /// Surface Info-tier signals (single-maintainer alone, etc.).
-        /// Off by default because Info findings are by design noisy
-        /// inventory data, not actionable alerts.
+        /// Show every finding the evaluators emitted, including those
+        /// the policy would normally Allow-filter (Low CVEs, etc.).
+        /// Use when you want the full picture instead of just
+        /// warn/block-tier results.
         #[arg(long, alias = "report-single-maintainer")]
         info: bool,
         /// Threshold above which the audit exits non-zero. `block`
@@ -84,6 +85,11 @@ enum Cmd {
         /// 2 on blocks. `never`: always exit 0 (informational).
         #[arg(long, value_enum, default_value_t = FailOnArg::Block)]
         fail_on: FailOnArg,
+        /// Force a specific lockfile when more than one is present
+        /// (`package-lock.json` | `pnpm-lock.yaml` | `yarn.lock` |
+        /// `pom.xml`). Default: auto-detect.
+        #[arg(long)]
+        lockfile: Option<String>,
     },
     /// Generate (and optionally apply) the upgrade commands that
     /// resolve fix-able findings in the current project.
@@ -131,8 +137,16 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Audit { path, format, collapse, info, fail_on } => {
-            commands::audit::run(&path, format.into(), collapse, info, fail_on.into()).await
+        Cmd::Audit { path, format, collapse, info, fail_on, lockfile } => {
+            commands::audit::run(
+                &path,
+                format.into(),
+                collapse,
+                info,
+                fail_on.into(),
+                lockfile.as_deref(),
+            )
+            .await
         }
         Cmd::Fix { path, target, apply, yes } => {
             commands::fix::run(&path, target.into(), apply, yes).await

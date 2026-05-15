@@ -21,16 +21,31 @@ pub struct FindingsReport {
 }
 
 impl FindingsReport {
+    /// Default: drops Allow-tier findings except `Info` severity ones
+    /// (those are explicit informational rows the user opted into via
+    /// per-evaluator policy).
     pub fn from_findings(findings: Vec<Finding>, policy: &Policy) -> Self {
+        Self::build(findings, policy, false)
+    }
+
+    /// `--info` mode: keep every finding regardless of action. Used
+    /// when the user wants the full picture, including things default
+    /// policy filters as Allow (Low CVEs, etc.).
+    pub fn from_findings_verbose(findings: Vec<Finding>, policy: &Policy) -> Self {
+        Self::build(findings, policy, true)
+    }
+
+    fn build(findings: Vec<Finding>, policy: &Policy, keep_allow: bool) -> Self {
         let items: Vec<ScoredFinding> = findings
             .into_iter()
             .map(|f| {
                 let action = decide_action(policy, &f);
                 ScoredFinding { finding: f, action }
             })
-            // Drop Allow rows EXCEPT when the finding is Info-tier (those
-            // are intentional informational rows the user opted into).
             .filter(|s| {
+                if keep_allow {
+                    return true;
+                }
                 s.action != Action::Allow || s.finding.severity == FindingSeverity::Info
             })
             .collect();

@@ -72,7 +72,7 @@ impl PackageManager {
 }
 
 pub async fn run(path: &Path, target: FixTarget, apply: bool, yes: bool) -> Result<()> {
-    let report = audit::evaluate_project(path, false).await?;
+    let report = audit::evaluate_project(path, false, None).await?;
     let plan = build_plan(&report, target);
     print_plan(&plan, target);
 

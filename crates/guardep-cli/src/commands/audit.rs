@@ -7,7 +7,7 @@ use guardep_core::{
     policy::Policy,
     postinstall::PostinstallEvaluator,
     provenance::ProvenanceEvaluator,
-    resolver::auto_resolve,
+    resolver::{auto_resolve, resolve_with},
     FindingsReport,
 };
 use owo_colors::OwoColorize;
@@ -33,8 +33,9 @@ pub async fn run(
     collapse: bool,
     show_info: bool,
     fail_on: FailOn,
+    lockfile: Option<&str>,
 ) -> Result<()> {
-    let report = evaluate_project(path, show_info).await?;
+    let report = evaluate_project(path, show_info, lockfile).await?;
     match format {
         Format::Table => crate::report::print_verdict(&report, collapse),
         Format::Json => crate::report::print_json(&report, collapse)?,
@@ -56,8 +57,15 @@ pub async fn run(
 pub async fn evaluate_project(
     path: &Path,
     show_info: bool,
+    lockfile: Option<&str>,
 ) -> Result<FindingsReport> {
-    let (packages, lockfile_kind) = auto_resolve(path)?;
+    let (packages, lockfile_kind) = match lockfile {
+        Some(name) => (resolve_with(path, name)?, name),
+        None => {
+            let (pkgs, name) = auto_resolve(path)?;
+            (pkgs, name)
+        }
+    };
     eprintln!(
         "{} resolved {} packages from {}",
         ">".cyan(),
@@ -97,5 +105,14 @@ pub async fn evaluate_packages(
     );
 
     let findings = registry.run(&packages, &policy).await?;
-    Ok(FindingsReport::from_findings(findings, &policy))
+    // `--info` lifts the Allow-tier filter so the report shows
+    // everything every evaluator emitted, regardless of policy
+    // action. Without it, the user would only see warn/block tier
+    // findings and never know how many Low signals exist.
+    let report = if show_info {
+        FindingsReport::from_findings_verbose(findings, &policy)
+    } else {
+        FindingsReport::from_findings(findings, &policy)
+    };
+    Ok(report)
 }
