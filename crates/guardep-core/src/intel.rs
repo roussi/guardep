@@ -423,14 +423,17 @@ fn days_since(ts: &str, now: DateTime<Utc>) -> Option<i64> {
 }
 
 /// Reasons in priority order — first match wins for the `id` slug.
+/// `single-maintainer` is intentionally last because it's the median
+/// state of npm and almost never the most actionable reason in a
+/// composite finding.
 const REASON_PRIORITY: &[&str] = &[
     "typosquat",
-    "single-maintainer",
     "fresh-publish",
     "abandoned",
     "few-versions",
     "no-source",
     "very-fresh-latest",
+    "single-maintainer",
 ];
 
 fn primary_reason(reasons: &[String]) -> &str {
@@ -514,12 +517,27 @@ fn score_package(
 
     let score = score.clamp(0, 100) as u8;
 
-    let mut severity = match score {
-        s if s >= 80 => FindingSeverity::Critical,
-        s if s >= 60 => FindingSeverity::High,
-        s if s >= 40 => FindingSeverity::Medium,
-        s if s >= 20 => FindingSeverity::Low,
-        _ => return None,
+    // Suppress single-maintainer-only findings: this is the median state
+    // of npm and emitting one warning per single-maintainer package is
+    // pure noise. When opted in via `report_single_maintainer`, surface
+    // them as `Info` so they appear in --report-single-maintainer mode
+    // without triggering warn/block at any policy.
+    let only_reason_is_single_maintainer =
+        reasons.len() == 1 && reasons[0] == "single-maintainer";
+
+    let mut severity = if only_reason_is_single_maintainer {
+        if !policy.report_single_maintainer {
+            return None;
+        }
+        FindingSeverity::Info
+    } else {
+        match score {
+            s if s >= 80 => FindingSeverity::Critical,
+            s if s >= 60 => FindingSeverity::High,
+            s if s >= 40 => FindingSeverity::Medium,
+            s if s >= 20 => FindingSeverity::Low,
+            _ => return None,
+        }
     };
 
     if policy.block_typosquats && reasons.iter().any(|r| r == "typosquat") {
@@ -817,11 +835,20 @@ mod tests {
         let f = score_package(&pkg, &snap_40, &policy, None).expect("emit");
         assert_eq!(f.severity, FindingSeverity::Medium);
 
-        // Low: 20-39. single-maintainer (25) only = 25
+        // Low: 20-39. single-maintainer (25) only = 25 — but
+        // single-maintainer-only is suppressed by default. Verify both
+        // paths: default policy returns None; opt-in policy returns Info.
         let snap_25 = make_snapshot(1, 50, None, None, None, None, true);
         let pkg = npm("safepkgname", "1.0.0");
-        let f = score_package(&pkg, &snap_25, &policy, None).expect("emit");
-        assert_eq!(f.severity, FindingSeverity::Low);
+        assert!(
+            score_package(&pkg, &snap_25, &policy, None).is_none(),
+            "single-maintainer-only should be suppressed by default"
+        );
+        let mut policy_info = policy.clone();
+        policy_info.report_single_maintainer = true;
+        let f = score_package(&pkg, &snap_25, &policy_info, None)
+            .expect("emit when reporting enabled");
+        assert_eq!(f.severity, FindingSeverity::Info);
 
         // <20 → no emit. Healthy: 5 maintainers, lots of versions, repo present
         let snap_low = make_snapshot(5, 50, None, None, None, None, true);
@@ -980,6 +1007,48 @@ mod tests {
             findings[0].details["typosquat_of"].as_str(),
             Some("lodash")
         );
+    }
+
+    /// Single-maintainer-only findings are suppressed by default
+    /// because >50% of npm packages have one maintainer and emitting a
+    /// finding for each is pure noise. With `report_single_maintainer`
+    /// enabled they surface as `Info` so users can audit them without
+    /// any policy ever blocking or warning on them.
+    #[test]
+    fn single_maintainer_only_suppressed_by_default() {
+        let snap = make_snapshot(1, 50, None, None, None, None, true);
+        let pkg = npm("solo", "1.0.0");
+        let policy = Policy::default();
+        assert!(score_package(&pkg, &snap, &policy, None).is_none());
+
+        let mut opt_in = policy.clone();
+        opt_in.report_single_maintainer = true;
+        let f = score_package(&pkg, &snap, &opt_in, None).expect("emit");
+        assert_eq!(f.severity, FindingSeverity::Info);
+        assert_eq!(f.details["reasons"][0].as_str(), Some("single-maintainer"));
+    }
+
+    /// When single-maintainer is combined with another reason (e.g.
+    /// fresh-publish) the finding fires at its normal severity even
+    /// without the opt-in.
+    #[test]
+    fn single_maintainer_with_companion_reason_still_fires() {
+        let yesterday = rfc3339_days_ago(1);
+        let snap = make_snapshot(
+            1,
+            50,
+            Some(yesterday.clone()),
+            None,
+            None,
+            None,
+            true,
+        );
+        let pkg = npm("solo", "1.0.0");
+        let policy = Policy::default();
+        let f = score_package(&pkg, &snap, &policy, Some(yesterday))
+            .expect("composite signal should still emit");
+        // Above Info — composite signals don't get demoted.
+        assert!(f.severity > FindingSeverity::Info);
     }
 
     /// Reputation cross-check (Fix 5): a name that LOOKS like a

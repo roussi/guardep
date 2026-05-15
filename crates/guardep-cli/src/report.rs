@@ -28,7 +28,7 @@ fn print_expanded(deduped: &[&MatchResult]) {
     table.set_header(vec!["", "Package", "Advisory", "Class", "Severity", "Fix", "Action"]);
 
     for m in deduped {
-        let icon = action_icon(m.action);
+        let icon = row_icon(m.action, m.advisory.severity);
         let class = class_cell(m.advisory.class);
         let fix = m
             .advisory
@@ -66,7 +66,7 @@ fn print_collapsed(deduped: &[&MatchResult]) {
         let advisory_ids: Vec<&str> = items.iter().map(|m| m.advisory.id.as_str()).collect();
 
         table.add_row(vec![
-            action_icon(action),
+            row_icon(action, severity),
             Cell::new(key),
             Cell::new(items.len().to_string()),
             Cell::new(advisory_ids.join(", ")),
@@ -106,10 +106,11 @@ fn max_severity(items: &[&MatchResult]) -> Severity {
         .iter()
         .map(|m| m.advisory.severity)
         .max_by_key(|s| match s {
-            Severity::Critical => 4,
-            Severity::High => 3,
-            Severity::Medium => 2,
-            Severity::Low => 1,
+            Severity::Critical => 5,
+            Severity::High => 4,
+            Severity::Medium => 3,
+            Severity::Low => 2,
+            Severity::Info => 1,
             Severity::Unknown => 0,
         })
         .unwrap_or(Severity::Unknown)
@@ -255,6 +256,16 @@ fn action_icon(action: Action) -> Cell {
         Action::Warn => Cell::new("!").fg(Color::Yellow),
         Action::Allow => Cell::new("•").fg(Color::Grey),
     }
+}
+
+/// Variant that knows about Info severity — Info findings have action
+/// Allow but should render with a distinct cyan `i` so they don't blend
+/// in with suppressed entries.
+fn row_icon(action: Action, severity: Severity) -> Cell {
+    if action == Action::Allow && severity == Severity::Info {
+        return Cell::new("i").fg(Color::Cyan);
+    }
+    action_icon(action)
 }
 
 fn class_cell(class: ThreatClass) -> Cell {

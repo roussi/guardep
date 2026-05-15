@@ -40,6 +40,11 @@ enum Cmd {
         /// Group findings by package@version, joining advisory IDs with commas.
         #[arg(long)]
         collapse: bool,
+        /// Surface single-maintainer-only findings as Info. Off by
+        /// default because most npm packages have one maintainer and
+        /// reporting all of them is noise.
+        #[arg(long)]
+        report_single_maintainer: bool,
     },
     /// Install symlinks (npm/mvn/gradle) into ~/.guardep/bin.
     InstallShims {
@@ -73,8 +78,8 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Audit { path, format, collapse } => {
-            commands::audit::run(&path, format.into(), collapse).await
+        Cmd::Audit { path, format, collapse, report_single_maintainer } => {
+            commands::audit::run(&path, format.into(), collapse, report_single_maintainer).await
         }
         Cmd::InstallShims { force } => commands::install_shims::run(force),
         Cmd::Shim { tool, args } => shim::run(&tool, &args).await,

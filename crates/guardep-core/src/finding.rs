@@ -45,11 +45,14 @@ impl FindingKind {
 
 /// Severity tier shared across finding kinds. Vulnerabilities use it for
 /// CVSS bucketing; risk/postinstall/provenance findings map their internal
-/// score onto this scale.
+/// score onto this scale. `Info` is below `Low` and never blocks/warns
+/// at default policy — it exists so callers can opt into surfacing
+/// signals that are typically noise (e.g. single-maintainer alone).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum FindingSeverity {
     Unknown,
+    Info,
     Low,
     Medium,
     High,

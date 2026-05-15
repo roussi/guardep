@@ -20,8 +20,13 @@ pub enum Format {
     Json,
 }
 
-pub async fn run(path: &Path, format: Format, collapse: bool) -> Result<()> {
-    let verdict = evaluate_project(path).await?;
+pub async fn run(
+    path: &Path,
+    format: Format,
+    collapse: bool,
+    report_single_maintainer: bool,
+) -> Result<()> {
+    let verdict = evaluate_project(path, report_single_maintainer).await?;
     match format {
         Format::Table => crate::report::print_verdict(&verdict, collapse),
         Format::Json => crate::report::print_json(&verdict, collapse)?,
@@ -32,8 +37,13 @@ pub async fn run(path: &Path, format: Format, collapse: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn evaluate_project(path: &Path) -> Result<Verdict> {
-    let policy = Policy::load(&path.join("guardep.toml"))?;
+pub async fn evaluate_project(path: &Path, report_single_maintainer: bool) -> Result<Verdict> {
+    let mut policy = Policy::load(&path.join("guardep.toml"))?;
+    // CLI flag overrides config (only flips false -> true; setting it
+    // in config has the same effect as the flag).
+    if report_single_maintainer {
+        policy.report_single_maintainer = true;
+    }
     let packages = NpmLockResolver.resolve(path)?;
     eprintln!("{} resolved {} packages", ">".cyan(), packages.len());
 

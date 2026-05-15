@@ -102,6 +102,7 @@ fn legacy_severity(s: crate::advisory::Severity) -> FindingSeverity {
         High => FindingSeverity::High,
         Medium => FindingSeverity::Medium,
         Low => FindingSeverity::Low,
+        Info => FindingSeverity::Info,
         Unknown => FindingSeverity::Unknown,
     }
 }

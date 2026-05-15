@@ -27,10 +27,10 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
             "!".yellow()
         );
         run_real(tool, args)?;
-        return audit::run(&project_root, audit::Format::Table, false).await;
+        return audit::run(&project_root, audit::Format::Table, false, false).await;
     }
 
-    let verdict = audit::evaluate_project(&project_root).await?;
+    let verdict = audit::evaluate_project(&project_root, false).await?;
     if verdict.should_block() {
         crate::report::print_verdict(&verdict, false);
         eprintln!(

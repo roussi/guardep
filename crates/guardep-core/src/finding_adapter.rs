@@ -42,7 +42,12 @@ pub fn findings_to_verdict(findings: Vec<Finding>, policy: &Policy) -> Verdict {
                 action,
             }
         })
-        .filter(|m| m.action != Action::Allow)
+        // Keep Info-tier findings (severity == Info) even though their
+        // action is Allow — the renderer surfaces them as informational
+        // rows, not warnings or blocks.
+        .filter(|m| {
+            m.action != Action::Allow || m.advisory.severity == AdvSeverity::Info
+        })
         .collect();
 
     Verdict { matches }
@@ -80,6 +85,7 @@ fn legacy_severity(s: FindingSeverity) -> AdvSeverity {
         FindingSeverity::High => AdvSeverity::High,
         FindingSeverity::Medium => AdvSeverity::Medium,
         FindingSeverity::Low => AdvSeverity::Low,
+        FindingSeverity::Info => AdvSeverity::Info,
         FindingSeverity::Unknown => AdvSeverity::Unknown,
     }
 }

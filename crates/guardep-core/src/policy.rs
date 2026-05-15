@@ -74,6 +74,13 @@ pub struct Policy {
     /// (fresh-publish risk window for compromise detection).
     #[serde(default = "default_fresh_publish_days")]
     pub warn_if_fresh_publish_days: u32,
+    /// Surface single-maintainer findings as Info even when no other
+    /// risk reason fires. Default false because most npm packages have
+    /// one maintainer and emitting all of them is pure noise. Enable
+    /// via `--report-single-maintainer` CLI flag (or set this to true
+    /// in `guardep.toml`).
+    #[serde(default)]
+    pub report_single_maintainer: bool,
 
     // ── Provenance policy (Phase 1B) ─────────────────────────────────────
     /// Glob patterns for packages that MUST have valid Sigstore provenance.
@@ -177,6 +184,7 @@ impl Default for Policy {
             warn_if_unmaintained_days: 730,
             block_typosquats: true,
             warn_if_fresh_publish_days: 7,
+            report_single_maintainer: false,
             require_provenance: Vec::new(),
             missing_provenance: Action::Block,
             provenance_mismatch: Action::Block,
@@ -206,6 +214,7 @@ impl Policy {
                 Severity::High => self.high_cve,
                 Severity::Medium => self.medium_cve,
                 Severity::Low | Severity::Unknown => self.low_cve,
+                Severity::Info => Action::Allow,
             },
         }
     }
@@ -213,23 +222,28 @@ impl Policy {
     /// Unified decision path used by [`finding::decide_action`].
     /// Maps a `(FindingKind, FindingSeverity)` pair to an [`Action`].
     pub fn decide_finding(&self, kind: FindingKind, severity: FindingSeverity) -> Action {
+        // Info tier never blocks or warns regardless of kind. It's the
+        // opt-in surface for noise-by-default signals.
+        if severity == FindingSeverity::Info {
+            return Action::Allow;
+        }
         match kind {
             FindingKind::Malware => self.malware,
             FindingKind::Vulnerability => match severity {
                 FindingSeverity::Critical => self.critical_cve,
                 FindingSeverity::High => self.high_cve,
                 FindingSeverity::Medium => self.medium_cve,
-                FindingSeverity::Low | FindingSeverity::Unknown => self.low_cve,
+                FindingSeverity::Low | FindingSeverity::Unknown | FindingSeverity::Info => self.low_cve,
             },
             FindingKind::PostinstallScript => match severity {
                 FindingSeverity::Critical => self.postinstall_critical,
                 FindingSeverity::High | FindingSeverity::Medium => self.postinstall_suspicious,
-                FindingSeverity::Low | FindingSeverity::Unknown => self.postinstall_default,
+                FindingSeverity::Low | FindingSeverity::Unknown | FindingSeverity::Info => self.postinstall_default,
             },
             FindingKind::RiskScore => match severity {
                 FindingSeverity::Critical | FindingSeverity::High => Action::Block,
                 FindingSeverity::Medium => Action::Warn,
-                FindingSeverity::Low | FindingSeverity::Unknown => Action::Allow,
+                FindingSeverity::Low | FindingSeverity::Unknown | FindingSeverity::Info => Action::Allow,
             },
             FindingKind::MissingProvenance => self.missing_provenance,
             FindingKind::ProvenanceMismatch => self.provenance_mismatch,
