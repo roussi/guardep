@@ -493,17 +493,14 @@ fn score_package(
 
     let score = score.clamp(0, 100) as u8;
 
-    // Suppress single-maintainer-only findings: this is the median state
-    // of npm and emitting one warning per single-maintainer package is
-    // pure noise. When opted in via `show_info`, surface them as `Info`
-    // so they appear without triggering warn/block at any policy.
+    // Single-maintainer is the median state of npm — taken alone it's
+    // weak signal, so we emit it at `Info` and let the display
+    // threshold filter it out. Users who lower `--severity info` still
+    // see it; everyone else doesn't.
     let only_reason_is_single_maintainer =
         reasons.len() == 1 && reasons[0] == "single-maintainer";
 
     let mut severity = if only_reason_is_single_maintainer {
-        if !policy.show_info {
-            return None;
-        }
         FindingSeverity::Info
     } else {
         match score {
@@ -811,19 +808,13 @@ mod tests {
         let f = score_package(&pkg, &snap_40, &policy, None).expect("emit");
         assert_eq!(f.severity, FindingSeverity::Medium);
 
-        // Low: 20-39. single-maintainer (25) only = 25, but
-        // single-maintainer-only is suppressed by default. Verify both
-        // paths: default policy returns None; opt-in policy returns Info.
+        // single-maintainer alone (weight 25) emits at Info regardless of
+        // policy. Display threshold (in FindingsReport) decides whether
+        // it shows up in the user-facing table.
         let snap_25 = make_snapshot(1, 50, None, None, None, None, true);
         let pkg = npm("safepkgname", "1.0.0");
-        assert!(
-            score_package(&pkg, &snap_25, &policy, None).is_none(),
-            "single-maintainer-only should be suppressed by default"
-        );
-        let mut policy_info = policy.clone();
-        policy_info.show_info = true;
-        let f = score_package(&pkg, &snap_25, &policy_info, None)
-            .expect("emit when reporting enabled");
+        let f = score_package(&pkg, &snap_25, &policy, None)
+            .expect("single-maintainer alone is emitted at Info");
         assert_eq!(f.severity, FindingSeverity::Info);
 
         // <20 -> no emit. Healthy: 5 maintainers, lots of versions, repo present
@@ -985,21 +976,16 @@ mod tests {
         );
     }
 
-    /// Single-maintainer-only findings are suppressed by default
-    /// because >50% of npm packages have one maintainer and emitting a
-    /// finding for each is pure noise. With `show_info`
-    /// enabled they surface as `Info` so users can audit them without
-    /// any policy ever blocking or warning on them.
+    /// Single-maintainer-only is emitted at Info severity. It's noisy
+    /// (>50% of npm packages have one maintainer) so the display
+    /// threshold (`min_display_severity = Low` by default) hides it.
+    /// `--severity info` surfaces it for users who want the full audit.
     #[test]
-    fn single_maintainer_only_suppressed_by_default() {
+    fn single_maintainer_only_emits_info() {
         let snap = make_snapshot(1, 50, None, None, None, None, true);
         let pkg = npm("solo", "1.0.0");
         let policy = Policy::default();
-        assert!(score_package(&pkg, &snap, &policy, None).is_none());
-
-        let mut opt_in = policy.clone();
-        opt_in.show_info = true;
-        let f = score_package(&pkg, &snap, &opt_in, None).expect("emit");
+        let f = score_package(&pkg, &snap, &policy, None).expect("emit at Info");
         assert_eq!(f.severity, FindingSeverity::Info);
         assert_eq!(f.details["reasons"][0].as_str(), Some("single-maintainer"));
     }

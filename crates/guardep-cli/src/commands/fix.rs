@@ -72,7 +72,12 @@ impl PackageManager {
 }
 
 pub async fn run(path: &Path, target: FixTarget, apply: bool, yes: bool) -> Result<()> {
-    let report = audit::evaluate_project(path, false, None).await?;
+    // Fix planning needs every actionable finding regardless of CLI
+    // display preference, so override threshold to Low (default minus
+    // Info-only signals like single-maintainer-alone, which carry no
+    // version-bump remedy anyway).
+    let report =
+        audit::evaluate_project(path, guardep_core::FindingSeverity::Low, None).await?;
     let plan = build_plan(&report, target);
     print_plan(&plan, target);
 

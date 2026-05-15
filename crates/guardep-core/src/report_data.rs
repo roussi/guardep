@@ -21,34 +21,27 @@ pub struct FindingsReport {
 }
 
 impl FindingsReport {
-    /// Default: drops Allow-tier findings except `Info` severity ones
-    /// (those are explicit informational rows the user opted into via
-    /// per-evaluator policy).
+    /// Build a report by scoring every finding through `policy.decide_action`,
+    /// then dropping rows whose severity is below `policy.min_display_severity`.
+    /// Rows are sorted Critical → Info (severity desc, then package name)
+    /// so the most urgent issues land at the top of the table.
     pub fn from_findings(findings: Vec<Finding>, policy: &Policy) -> Self {
-        Self::build(findings, policy, false)
-    }
-
-    /// `--info` mode: keep every finding regardless of action. Used
-    /// when the user wants the full picture, including things default
-    /// policy filters as Allow (Low CVEs, etc.).
-    pub fn from_findings_verbose(findings: Vec<Finding>, policy: &Policy) -> Self {
-        Self::build(findings, policy, true)
-    }
-
-    fn build(findings: Vec<Finding>, policy: &Policy, keep_allow: bool) -> Self {
-        let items: Vec<ScoredFinding> = findings
+        let mut items: Vec<ScoredFinding> = findings
             .into_iter()
             .map(|f| {
                 let action = decide_action(policy, &f);
                 ScoredFinding { finding: f, action }
             })
-            .filter(|s| {
-                if keep_allow {
-                    return true;
-                }
-                s.action != Action::Allow || s.finding.severity == FindingSeverity::Info
-            })
+            .filter(|s| s.finding.severity >= policy.min_display_severity)
             .collect();
+        items.sort_by(|a, b| {
+            b.finding
+                .severity
+                .cmp(&a.finding.severity)
+                .then_with(|| a.finding.package.name.cmp(&b.finding.package.name))
+                .then_with(|| a.finding.package.version.cmp(&b.finding.package.version))
+                .then_with(|| a.finding.id.cmp(&b.finding.id))
+        });
         Self { items }
     }
 
@@ -179,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn low_cve_filtered_out_by_default() {
+    fn low_cve_kept_at_default_threshold() {
         let f = make_finding(
             "x",
             "1.0.0",
@@ -187,17 +180,60 @@ mod tests {
             FindingSeverity::Low,
         );
         let r = FindingsReport::from_findings(vec![f], &Policy::default());
-        assert!(r.items.is_empty(), "low CVE should be Allow-filtered");
+        assert_eq!(r.items.len(), 1, "low CVE is at threshold, should be kept");
+        assert_eq!(r.items[0].action, crate::policy::Action::Allow);
     }
 
     #[test]
-    fn info_row_kept_even_when_action_is_allow() {
+    fn info_dropped_at_default_threshold() {
         let f = make_finding("x", "1.0.0", FindingKind::RiskScore, FindingSeverity::Info);
         let r = FindingsReport::from_findings(vec![f], &Policy::default());
+        assert!(
+            r.items.is_empty(),
+            "Info < Low threshold by default, should be filtered"
+        );
+    }
+
+    #[test]
+    fn info_kept_when_threshold_lowered() {
+        let f = make_finding("x", "1.0.0", FindingKind::RiskScore, FindingSeverity::Info);
+        let mut policy = Policy::default();
+        policy.min_display_severity = FindingSeverity::Info;
+        let r = FindingsReport::from_findings(vec![f], &policy);
         assert_eq!(r.items.len(), 1);
-        assert_eq!(r.count_info(), 1);
-        assert!(!r.should_block());
-        assert!(!r.has_warnings());
+    }
+
+    #[test]
+    fn high_threshold_drops_everything_below() {
+        let mut policy = Policy::default();
+        policy.min_display_severity = FindingSeverity::High;
+        let findings = vec![
+            make_finding("a", "1", FindingKind::Vulnerability, FindingSeverity::Low),
+            make_finding("b", "1", FindingKind::Vulnerability, FindingSeverity::Medium),
+            make_finding("c", "1", FindingKind::Vulnerability, FindingSeverity::High),
+            make_finding("d", "1", FindingKind::Vulnerability, FindingSeverity::Critical),
+        ];
+        let r = FindingsReport::from_findings(findings, &policy);
+        assert_eq!(r.items.len(), 2, "only High + Critical should remain");
+    }
+
+    #[test]
+    fn findings_sorted_critical_to_info() {
+        let mut policy = Policy::default();
+        policy.min_display_severity = FindingSeverity::Info;
+        let findings = vec![
+            make_finding("z", "1", FindingKind::Vulnerability, FindingSeverity::Low),
+            make_finding("a", "1", FindingKind::Vulnerability, FindingSeverity::Critical),
+            make_finding("m", "1", FindingKind::Vulnerability, FindingSeverity::Medium),
+            make_finding("k", "1", FindingKind::Vulnerability, FindingSeverity::High),
+        ];
+        let r = FindingsReport::from_findings(findings, &policy);
+        let order: Vec<&str> = r
+            .items
+            .iter()
+            .map(|s| s.finding.package.name.as_str())
+            .collect();
+        assert_eq!(order, vec!["a", "k", "m", "z"]);
     }
 
     #[test]

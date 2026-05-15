@@ -70,9 +70,14 @@ Removes the symlinks and strips the marker block from every rc file. Backups sta
 guardep audit --path ./frontend
 guardep audit --path ./frontend --collapse                 # one row per package
 guardep audit --path ./frontend --collapse --format json   # CI-friendly
-guardep audit --path ./frontend --info                     # surface info-tier signals
+guardep audit --path ./frontend --severity high            # only High + Critical
+guardep audit --path ./frontend --severity info            # show everything (incl. single-maintainer noise)
 guardep audit --path ./frontend --fail-on warn             # CI: exit 1 on warnings too
+guardep --verbose audit --path ./frontend                  # evaluator timings + HTTP logs
 ```
+
+Severity levels (high → low): `critical`, `high`, `medium`, `low` (default), `info`.
+Findings are sorted Critical → Info, then alphabetically by package within each tier.
 
 ### Use as a shim
 
@@ -128,7 +133,7 @@ warn_if_risk_score_above   = 60
 warn_if_unmaintained_days  = 730
 warn_if_fresh_publish_days = 7
 block_typosquats           = true
-show_info                  = false   # surface Info-tier findings
+min_display_severity       = "low"   # `info`/`low`/`medium`/`high`/`critical`. Findings below this are dropped from the report.
 
 # Provenance policy
 require_provenance   = []           # globs: ["@*/*", "chalk", "react"]

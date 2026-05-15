@@ -78,11 +78,14 @@ pub struct Policy {
     /// (fresh-publish risk window for compromise detection).
     #[serde(default = "default_fresh_publish_days")]
     pub warn_if_fresh_publish_days: u32,
-    /// Surface Info-tier findings (single-maintainer alone, etc.).
-    /// Off by default because Info findings are noisy by design. Enable
-    /// via `--info` CLI flag or set true in `guardep.toml`.
-    #[serde(default)]
-    pub show_info: bool,
+    /// Minimum severity to *display* in reports. Findings below this
+    /// threshold are dropped from table/JSON output entirely. Does not
+    /// affect what evaluators emit or what the policy blocks/warns on
+    /// — `decide_action` still runs for every finding. Default `Low`
+    /// hides only `Info`/`Unknown` rows. Set to `Critical` to see
+    /// only the most urgent issues, or `Info` to see everything.
+    #[serde(default = "default_min_display_severity")]
+    pub min_display_severity: FindingSeverity,
 
     // ── Provenance policy (Phase 1B) ─────────────────────────────────────
     /// Glob patterns for packages that MUST have valid Sigstore provenance.
@@ -136,6 +139,9 @@ fn default_fresh_publish_days() -> u32 {
 fn default_true() -> bool {
     true
 }
+fn default_min_display_severity() -> FindingSeverity {
+    FindingSeverity::Low
+}
 
 impl Default for Policy {
     fn default() -> Self {
@@ -153,7 +159,7 @@ impl Default for Policy {
             warn_if_unmaintained_days: 730,
             block_typosquats: true,
             warn_if_fresh_publish_days: 7,
-            show_info: false,
+            min_display_severity: FindingSeverity::Low,
             require_provenance: Vec::new(),
             missing_provenance: Action::Block,
             provenance_mismatch: Action::Block,

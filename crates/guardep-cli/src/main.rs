@@ -56,9 +56,40 @@ impl From<FixTargetArg> for commands::fix::FixTarget {
     }
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum SeverityArg {
+    /// Show everything, including informational signals (single-maintainer alone, etc.).
+    Info,
+    /// Show Low and above (default). Hides Info-tier rows.
+    Low,
+    /// Show Medium and above.
+    Medium,
+    /// Show High and above.
+    High,
+    /// Show only Critical findings.
+    Critical,
+}
+
+impl From<SeverityArg> for guardep_core::FindingSeverity {
+    fn from(s: SeverityArg) -> Self {
+        match s {
+            SeverityArg::Info => guardep_core::FindingSeverity::Info,
+            SeverityArg::Low => guardep_core::FindingSeverity::Low,
+            SeverityArg::Medium => guardep_core::FindingSeverity::Medium,
+            SeverityArg::High => guardep_core::FindingSeverity::High,
+            SeverityArg::Critical => guardep_core::FindingSeverity::Critical,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "guardep", version, about = "Block compromised dependencies before they install")]
 struct Cli {
+    /// Verbose logging (HTTP calls, evaluator timings, cache hits).
+    /// Affects diagnostics only — does NOT change which findings are
+    /// shown. Use `--severity` to control finding visibility.
+    #[arg(short = 'v', long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Cmd,
 }
@@ -83,12 +114,13 @@ enum Cmd {
         /// Group findings by package@version, joining advisory IDs with commas.
         #[arg(long)]
         collapse: bool,
-        /// Show every finding the evaluators emitted, including those
-        /// the policy would normally Allow-filter (Low CVEs, etc.).
-        /// Use when you want the full picture instead of just
-        /// warn/block-tier results.
-        #[arg(long, alias = "report-single-maintainer")]
-        info: bool,
+        /// Minimum severity to display in the report. Findings below
+        /// this threshold are dropped from the table/JSON entirely
+        /// (policy still scores them; only display is filtered).
+        /// `info` shows everything, `low` (default) hides Info-tier
+        /// rows, `critical` shows only the most urgent findings.
+        #[arg(long, value_enum, default_value_t = SeverityArg::Low)]
+        severity: SeverityArg,
         /// Threshold above which the audit exits non-zero. `block`
         /// (default): exit 2 on blocks. `warn`: exit 1 on warnings,
         /// 2 on blocks. `never`: always exit 0 (informational).
@@ -151,6 +183,20 @@ enum Cmd {
     Cache(CacheCmd),
 }
 
+// Configure log level. `--verbose` bumps the default from `warn` to
+// `debug` so HTTP calls / cache hits / evaluator timings surface in
+// stderr. `GUARDEP_LOG` env var overrides both.
+fn init_tracing(verbose: bool) {
+    let default = if verbose { "debug" } else { "warn" };
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_env("GUARDEP_LOG")
+                .unwrap_or_else(|_| EnvFilter::new(default)),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+}
+
 // Honour NO_COLOR / CLICOLOR_FORCE / non-tty stdout. Without this we
 // emit ANSI escapes into pipes (`guardep audit | tee log.txt`) and
 // non-color terminals.
@@ -173,25 +219,25 @@ fn init_color_support() {
 async fn main() -> Result<()> {
     init_color_support();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_env("GUARDEP_LOG").unwrap_or_else(|_| EnvFilter::new("warn")))
-        .with_writer(std::io::stderr)
-        .init();
-
-    // Argv0 dispatch — busybox pattern.
+    // Argv0 dispatch — busybox pattern. Shim-mode never sees `--verbose`
+    // since it forwards args to the underlying tool unchanged, so init
+    // tracing at the default level here.
     if let Some(tool) = shim::detect_invocation() {
+        init_tracing(false);
         let args: Vec<String> = std::env::args().skip(1).collect();
         return shim::run(&tool, &args).await;
     }
 
     let cli = Cli::parse();
+    init_tracing(cli.verbose);
+
     match cli.command {
-        Cmd::Audit { path, format, collapse, info, fail_on, lockfile } => {
+        Cmd::Audit { path, format, collapse, severity, fail_on, lockfile } => {
             commands::audit::run(
                 &path,
                 format.into(),
                 collapse,
-                info,
+                severity.into(),
                 fail_on.into(),
                 lockfile.as_deref(),
             )

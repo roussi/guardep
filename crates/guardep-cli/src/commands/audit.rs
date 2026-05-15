@@ -8,7 +8,7 @@ use guardep_core::{
     postinstall::PostinstallEvaluator,
     provenance::ProvenanceEvaluator,
     resolver::{auto_resolve, resolve_with},
-    FindingsReport,
+    FindingSeverity, FindingsReport,
 };
 use owo_colors::OwoColorize;
 use std::path::Path;
@@ -31,11 +31,11 @@ pub async fn run(
     path: &Path,
     format: Format,
     collapse: bool,
-    show_info: bool,
+    min_severity: FindingSeverity,
     fail_on: FailOn,
     lockfile: Option<&str>,
 ) -> Result<()> {
-    let report = evaluate_project(path, show_info, lockfile).await?;
+    let report = evaluate_project(path, min_severity, lockfile).await?;
     match format {
         Format::Table => crate::report::print_verdict(&report, collapse),
         Format::Json => crate::report::print_json(&report, collapse)?,
@@ -56,7 +56,7 @@ pub async fn run(
 
 pub async fn evaluate_project(
     path: &Path,
-    show_info: bool,
+    min_severity: FindingSeverity,
     lockfile: Option<&str>,
 ) -> Result<FindingsReport> {
     let (packages, lockfile_kind) = match lockfile {
@@ -72,18 +72,19 @@ pub async fn evaluate_project(
         packages.len(),
         lockfile_kind
     );
-    evaluate_packages(path, packages, show_info).await
+    evaluate_packages(path, packages, min_severity).await
 }
 
 pub async fn evaluate_packages(
     path: &Path,
     packages: Vec<PackageRef>,
-    show_info: bool,
+    min_severity: FindingSeverity,
 ) -> Result<FindingsReport> {
     let mut policy = Policy::load(&path.join("guardep.toml"))?;
-    if show_info {
-        policy.show_info = true;
-    }
+    // CLI override: `--severity X` lowers/raises the display threshold
+    // independently of `guardep.toml`. Useful for one-off debugging
+    // ("show me everything") or strict CI ("only critical+").
+    policy.min_display_severity = min_severity;
 
     let dirs = directories::ProjectDirs::from("dev", "guardep", "guardep")
         .ok_or_else(|| anyhow::anyhow!("could not determine cache dir"))?;
@@ -105,14 +106,5 @@ pub async fn evaluate_packages(
     );
 
     let findings = registry.run(&packages, &policy).await?;
-    // `--info` lifts the Allow-tier filter so the report shows
-    // everything every evaluator emitted, regardless of policy
-    // action. Without it, the user would only see warn/block tier
-    // findings and never know how many Low signals exist.
-    let report = if show_info {
-        FindingsReport::from_findings_verbose(findings, &policy)
-    } else {
-        FindingsReport::from_findings(findings, &policy)
-    };
-    Ok(report)
+    Ok(FindingsReport::from_findings(findings, &policy))
 }
