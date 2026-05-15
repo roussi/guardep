@@ -352,6 +352,12 @@ pub struct IntelSnapshot {
     /// entries (e.g. `cypress` vs `express`).
     #[serde(default)]
     pub weekly_downloads: Option<u64>,
+    /// Per-version deprecation map: `{ "1.2.3": "use foo@2 instead" }`.
+    /// npm marks individual versions deprecated, not whole packages, so
+    /// the reason is per-version. We keep only versions that have a
+    /// non-empty deprecation message to keep the cache compact.
+    #[serde(default)]
+    pub versions_deprecated: std::collections::HashMap<String, String>,
 }
 
 pub struct IntelEvaluator {
@@ -503,16 +509,46 @@ impl Evaluator for IntelEvaluator {
             }
         }
 
-        // Phase 4: score everything.
+        // Phase 4: score everything. Two independent finding paths:
+        // composite risk score, and per-version deprecation. Deprecation
+        // is npm-authoritative (the maintainer marked it) so it's never
+        // gated by the risk-score thresholds.
         let mut findings: Vec<Finding> = Vec::new();
         for (pkg, snap) in hits.iter().chain(fetched.iter()) {
             let installed_published_at = snap.installed_published_at.clone();
             if let Some(f) = score_package(pkg, snap, policy, installed_published_at) {
                 findings.push(f);
             }
+            if let Some(f) = deprecated_finding(pkg, snap) {
+                findings.push(f);
+            }
         }
         Ok(findings)
     }
+}
+
+/// Emit a finding when the *installed* version is marked deprecated by
+/// the maintainer. Severity is Medium: deprecation is a maintenance
+/// signal, not a security one — the package still runs, but the author
+/// has explicitly told users to move off it. Users who want stricter
+/// behaviour can lift the action via policy.
+fn deprecated_finding(pkg: &PackageRef, snap: &IntelSnapshot) -> Option<Finding> {
+    let reason = snap.versions_deprecated.get(&pkg.version)?;
+    Some(Finding {
+        package: pkg.clone(),
+        kind: FindingKind::RiskScore,
+        id: format!("risk:deprecated:{}", pkg.name),
+        aliases: vec![],
+        summary: format!("Version deprecated by maintainer: {reason}"),
+        severity: FindingSeverity::Medium,
+        fixed_versions: vec![],
+        references: vec![format!("https://www.npmjs.com/package/{}", pkg.name)],
+        details: serde_json::json!({
+            "reasons": ["deprecated"],
+            "deprecated_message": reason,
+            "score": null,
+        }),
+    })
 }
 
 /// Extract just the fields we care about from a full npm metadata document.
@@ -562,6 +598,22 @@ fn snapshot_from_metadata(body: &Value) -> IntelSnapshot {
         })
         .unwrap_or(false);
 
+    // Per-version `deprecated` field: each version manifest can carry a
+    // string explaining the deprecation. Capture only non-empty entries
+    // so the cache stays compact for healthy packages.
+    let mut versions_deprecated: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    if let Some(versions_obj) = versions {
+        for (ver, manifest) in versions_obj {
+            if let Some(reason) = manifest.get("deprecated").and_then(Value::as_str) {
+                let trimmed = reason.trim();
+                if !trimmed.is_empty() {
+                    versions_deprecated.insert(ver.clone(), trimmed.to_string());
+                }
+            }
+        }
+    }
+
     IntelSnapshot {
         maintainer_count,
         version_count,
@@ -570,6 +622,7 @@ fn snapshot_from_metadata(body: &Value) -> IntelSnapshot {
         latest_tag,
         latest_published_at,
         has_repository,
+        versions_deprecated,
         weekly_downloads: None,
     }
 }
@@ -648,16 +701,29 @@ fn score_package(
         }
     }
 
-    let modified_days_ago = snap
-        .modified_at
+    // "Abandoned" means: the package has not had a new version published
+    // in N days. We prefer `latest_published_at` over `time.modified`
+    // because the registry bumps `modified` on metadata-only edits
+    // (maintainer changes, deprecation flips) — those are not releases
+    // and shouldn't reset the abandonment clock. Falls back to
+    // `modified_at` only when no per-version timestamp is known.
+    let release_days_ago = snap
+        .latest_published_at
         .as_deref()
+        .or(snap.modified_at.as_deref())
         .and_then(|ts| days_since(ts, now));
-    if let Some(days) = modified_days_ago {
+    if let Some(days) = release_days_ago {
         if days >= 0 && (days as u32) > policy.warn_if_unmaintained_days {
             score += 15;
             reasons.push("abandoned".into());
         }
     }
+    // Keep `modified_days_ago` for the details payload — useful diff
+    // signal when triaging "why was this flagged".
+    let modified_days_ago = snap
+        .modified_at
+        .as_deref()
+        .and_then(|ts| days_since(ts, now));
 
     // Typosquat detection, suppressed when the candidate is itself a
     // popular package (reputation cross-check). E.g. `cypress` is
@@ -695,9 +761,15 @@ fn score_package(
     // threshold filter it out. Users who lower `--severity info` still
     // see it; everyone else doesn't.
     let only_reason_is_single_maintainer = reasons.len() == 1 && reasons[0] == "single-maintainer";
+    // Abandonment alone (multi-maintainer pkg that just stopped
+    // releasing) is still actionable — surface at Low so it shows up
+    // in default audits without inflating the composite score.
+    let only_reason_is_abandoned = reasons.len() == 1 && reasons[0] == "abandoned";
 
     let mut severity = if only_reason_is_single_maintainer {
         FindingSeverity::Info
+    } else if only_reason_is_abandoned {
+        FindingSeverity::Low
     } else {
         match score {
             s if s >= 80 => FindingSeverity::Critical,
@@ -955,6 +1027,7 @@ mod tests {
             latest_published_at: latest_published,
             has_repository: has_repo,
             weekly_downloads: None,
+            versions_deprecated: std::collections::HashMap::new(),
         }
     }
 
@@ -1156,6 +1229,30 @@ mod tests {
             findings[0].severity
         );
         assert_eq!(findings[0].details["typosquat_of"].as_str(), Some("lodash"));
+    }
+
+    #[test]
+    fn deprecated_finding_emitted_when_installed_version_marked() {
+        let mut snap = make_snapshot(2, 10, None, None, None, None, true);
+        snap.versions_deprecated
+            .insert("1.0.0".to_string(), "use foo@2 instead".to_string());
+        let pkg = npm("foo", "1.0.0");
+        let f = deprecated_finding(&pkg, &snap).expect("emit");
+        assert_eq!(f.severity, FindingSeverity::Medium);
+        assert_eq!(f.id, "risk:deprecated:foo");
+        assert_eq!(
+            f.details["deprecated_message"].as_str(),
+            Some("use foo@2 instead")
+        );
+    }
+
+    #[test]
+    fn deprecated_finding_skipped_when_other_version_marked() {
+        let mut snap = make_snapshot(2, 10, None, None, None, None, true);
+        snap.versions_deprecated
+            .insert("0.9.0".to_string(), "old".to_string());
+        let pkg = npm("foo", "1.0.0");
+        assert!(deprecated_finding(&pkg, &snap).is_none());
     }
 
     /// Single-maintainer-only is emitted at Info severity. It's noisy

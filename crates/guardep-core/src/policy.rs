@@ -110,6 +110,48 @@ pub struct Policy {
     /// Refresh advisory cache every N hours.
     #[serde(default = "default_refresh")]
     pub cache_refresh_hours: u64,
+
+    // ── Exploit enrichment (EPSS / KEV) ──────────────────────────────────
+    /// Promote any CVE listed in CISA KEV to Critical regardless of CVSS.
+    /// Default true: KEV membership means confirmed in-the-wild exploit.
+    #[serde(default = "default_true")]
+    pub kev_promote_to_critical: bool,
+    /// EPSS score (0.0..1.0) at or above which severity is bumped one
+    /// tier (Low → Medium → High → Critical). Default 0.5 = the CVE has
+    /// a >= 50% probability of being exploited within 30 days per FIRST.
+    /// Set to a value > 1.0 to disable EPSS-based promotion entirely.
+    #[serde(default = "default_epss_threshold")]
+    pub epss_promote_threshold: f32,
+
+    // ── Source behavior scan ────────────────────────────────────────────
+    /// Enable cross-file source-behavior scanning of installed packages
+    /// (network/fs/env/eval/dynamic-require/entropy/minified). Adds
+    /// 50ms-2s per audit depending on dep tree size. Default true.
+    #[serde(default = "default_true")]
+    pub source_scan_enabled: bool,
+
+    // ── License policy ──────────────────────────────────────────────────
+    /// SPDX identifiers (or expressions) to block. Matched
+    /// case-insensitively against the package's declared license.
+    /// Example: `["GPL-3.0", "AGPL-3.0", "GPL-2.0-only"]`. Empty by
+    /// default — no surprise blocks.
+    #[serde(default)]
+    pub license_deny: HashSet<String>,
+    /// Action when a package declares no license at all.
+    #[serde(default = "default_warn")]
+    pub license_missing: Action,
+    /// Action when a package declares a license that is not a
+    /// recognized SPDX identifier (e.g. `"SEE LICENSE IN ..."`,
+    /// arbitrary URLs, custom strings).
+    #[serde(default = "default_warn")]
+    pub license_unidentified: Action,
+
+    // ── OSSF threat feed ────────────────────────────────────────────────
+    /// Pull the OSSF malicious-packages feed and flag any matched
+    /// package as Critical malware. Independent of OSV — OSSF entries
+    /// often land hours-to-days before OSV indexes them. Default true.
+    #[serde(default = "default_true")]
+    pub threat_feed_enabled: bool,
 }
 
 fn default_block() -> Action {
@@ -142,6 +184,9 @@ fn default_true() -> bool {
 fn default_min_display_severity() -> FindingSeverity {
     FindingSeverity::Low
 }
+fn default_epss_threshold() -> f32 {
+    0.5
+}
 
 impl Default for Policy {
     fn default() -> Self {
@@ -166,6 +211,13 @@ impl Default for Policy {
             allowlist: HashSet::new(),
             finding_allowlist: HashMap::new(),
             cache_refresh_hours: 6,
+            kev_promote_to_critical: true,
+            epss_promote_threshold: 0.5,
+            source_scan_enabled: true,
+            license_deny: HashSet::new(),
+            license_missing: Action::Warn,
+            license_unidentified: Action::Warn,
+            threat_feed_enabled: true,
         }
     }
 }
@@ -230,6 +282,19 @@ impl Policy {
             },
             FindingKind::MissingProvenance => self.missing_provenance,
             FindingKind::ProvenanceMismatch => self.provenance_mismatch,
+            FindingKind::SourceBehavior => match severity {
+                FindingSeverity::Critical => Action::Block,
+                FindingSeverity::High => Action::Warn,
+                _ => Action::Allow,
+            },
+            // License action is encoded in the finding's severity by
+            // `LicenseEvaluator` (Critical → deny-list hit, High →
+            // unidentified, Medium → missing). Mapping mirrors that.
+            FindingKind::License => match severity {
+                FindingSeverity::Critical => Action::Block,
+                FindingSeverity::High | FindingSeverity::Medium => Action::Warn,
+                _ => Action::Allow,
+            },
         }
     }
 

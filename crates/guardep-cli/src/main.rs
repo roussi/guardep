@@ -1,5 +1,6 @@
 mod commands;
 mod report;
+mod sbom;
 mod shim;
 
 use anyhow::Result;
@@ -11,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 enum OutputFormat {
     Table,
     Json,
+    Cyclonedx,
 }
 
 impl From<OutputFormat> for commands::audit::Format {
@@ -18,6 +20,7 @@ impl From<OutputFormat> for commands::audit::Format {
         match f {
             OutputFormat::Table => commands::audit::Format::Table,
             OutputFormat::Json => commands::audit::Format::Json,
+            OutputFormat::Cyclonedx => commands::audit::Format::CycloneDx,
         }
     }
 }
@@ -215,6 +218,26 @@ enum Cmd {
     /// Cache management subcommands.
     #[command(subcommand)]
     Cache(CacheCmd),
+    /// Diff two project states and report only the NEW findings.
+    /// Useful for PR-aware audits: compare the merge-base lockfile
+    /// against the head lockfile and surface only what the PR adds.
+    Diff {
+        /// Baseline project root (typically `git worktree` of main).
+        #[arg(long)]
+        base: PathBuf,
+        /// Head project root (the proposed change).
+        #[arg(long)]
+        head: PathBuf,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
+        /// Minimum severity for findings shown in the diff.
+        #[arg(long, value_enum, default_value_t = SeverityArg::Low)]
+        severity: SeverityArg,
+        /// Threshold above which the diff exits non-zero. Same semantics
+        /// as `audit --fail-on`. Default: exit 2 when the PR adds blocks.
+        #[arg(long, value_enum, default_value_t = FailOnArg::Block)]
+        fail_on: FailOnArg,
+    },
 }
 
 // Banner shown above `--help` / `--version` output. Modeled on
@@ -372,5 +395,14 @@ async fn main() -> Result<()> {
         Cmd::Shim { tool, args } => shim::run(&tool, &args).await,
         Cmd::Info => commands::info::run(),
         Cmd::Cache(CacheCmd::Prune { days }) => commands::cache::prune(days),
+        Cmd::Diff {
+            base,
+            head,
+            format,
+            severity,
+            fail_on,
+        } => {
+            commands::diff::run(&base, &head, format.into(), severity.into(), fail_on.into()).await
+        }
     }
 }

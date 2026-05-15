@@ -57,6 +57,7 @@ fn snap(
         latest_published_at: modified_days_ago.map(rfc3339_days_ago),
         has_repository: has_repo,
         weekly_downloads,
+        versions_deprecated: std::collections::HashMap::new(),
     }
 }
 

@@ -28,6 +28,16 @@ pub enum FindingKind {
     MissingProvenance,
     /// Provenance present but linked source repo doesn't match expected
     ProvenanceMismatch,
+    /// Behavior detected by static analysis of package source files
+    /// (network access, filesystem access, eval, dynamic require, env
+    /// reads, high-entropy strings, minified shipped code). The
+    /// specific behavior is in `details.behavior`.
+    SourceBehavior,
+    /// License-related issue: missing, unidentified (non-SPDX), or
+    /// matching the configured deny-list. The specific issue is in
+    /// `details.issue`; the raw declared value (if any) in
+    /// `details.declared`.
+    License,
 }
 
 impl FindingKind {
@@ -39,6 +49,8 @@ impl FindingKind {
             FindingKind::RiskScore => "risk_score",
             FindingKind::MissingProvenance => "missing_provenance",
             FindingKind::ProvenanceMismatch => "provenance_mismatch",
+            FindingKind::SourceBehavior => "source_behavior",
+            FindingKind::License => "license",
         }
     }
 }
@@ -112,14 +124,18 @@ impl Finding {
     pub fn display_class(&self) -> DisplayClass {
         match self.kind {
             FindingKind::Malware | FindingKind::ProvenanceMismatch => DisplayClass::Malware,
-            FindingKind::PostinstallScript | FindingKind::RiskScore => {
+            FindingKind::PostinstallScript
+            | FindingKind::RiskScore
+            | FindingKind::SourceBehavior => {
                 if self.severity == FindingSeverity::Critical {
                     DisplayClass::Malware
                 } else {
                     DisplayClass::Cve
                 }
             }
-            FindingKind::Vulnerability | FindingKind::MissingProvenance => DisplayClass::Cve,
+            FindingKind::Vulnerability | FindingKind::MissingProvenance | FindingKind::License => {
+                DisplayClass::Cve
+            }
         }
     }
 }

@@ -3,11 +3,13 @@ use guardep_core::{
     ecosystem::PackageRef,
     evaluator::EvaluatorRegistry,
     intel::IntelEvaluator,
+    license::LicenseEvaluator,
     osv_evaluator::OsvEvaluator,
     policy::Policy,
     postinstall::PostinstallEvaluator,
     provenance::ProvenanceEvaluator,
     resolver::{auto_resolve, resolve_with},
+    source_scan_evaluator::SourceScanEvaluator,
     FindingSeverity, FindingsReport,
 };
 use owo_colors::OwoColorize;
@@ -18,6 +20,7 @@ use std::sync::Arc;
 pub enum Format {
     Table,
     Json,
+    CycloneDx,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,10 +38,11 @@ pub async fn run(
     fail_on: FailOn,
     lockfile: Option<&str>,
 ) -> Result<()> {
-    let report = evaluate_project(path, min_severity, lockfile).await?;
+    let (packages, report) = evaluate_project_with_pkgs(path, min_severity, lockfile).await?;
     match format {
         Format::Table => crate::report::print_verdict(&report, collapse),
         Format::Json => crate::report::print_json(&report, collapse)?,
+        Format::CycloneDx => crate::sbom::print_cyclonedx(&packages, &report)?,
     }
     let exit_code = match fail_on {
         FailOn::Never => 0,
@@ -59,6 +63,18 @@ pub async fn evaluate_project(
     min_severity: FindingSeverity,
     lockfile: Option<&str>,
 ) -> Result<FindingsReport> {
+    let (_, report) = evaluate_project_with_pkgs(path, min_severity, lockfile).await?;
+    Ok(report)
+}
+
+/// Variant that returns the resolved package list alongside the report
+/// so callers (CycloneDX export, future SARIF) can include the full
+/// dependency graph, not just findings.
+pub async fn evaluate_project_with_pkgs(
+    path: &Path,
+    min_severity: FindingSeverity,
+    lockfile: Option<&str>,
+) -> Result<(Vec<PackageRef>, FindingsReport)> {
     let (packages, lockfile_kind) = match lockfile {
         Some(name) => (resolve_with(path, name)?, name),
         None => {
@@ -72,7 +88,8 @@ pub async fn evaluate_project(
         packages.len(),
         lockfile_kind
     );
-    evaluate_packages(path, packages, min_severity).await
+    let report = evaluate_packages(path, packages.clone(), min_severity).await?;
+    Ok((packages, report))
 }
 
 pub async fn evaluate_packages(
@@ -97,7 +114,12 @@ pub async fn evaluate_packages(
     registry.register(Arc::new(OsvEvaluator::new(cache_db.clone())?));
     registry.register(Arc::new(PostinstallEvaluator::new(path.to_path_buf())));
     registry.register(Arc::new(IntelEvaluator::new(cache_db.clone())?));
-    registry.register(Arc::new(ProvenanceEvaluator::new(cache_db)?));
+    registry.register(Arc::new(ProvenanceEvaluator::new(cache_db.clone())?));
+    registry.register(Arc::new(SourceScanEvaluator::new(path.to_path_buf())));
+    registry.register(Arc::new(LicenseEvaluator::new(path.to_path_buf())));
+    registry.register(Arc::new(
+        guardep_core::threat_feed::ThreatFeedEvaluator::new(cache_db)?,
+    ));
 
     eprintln!(
         "{} running evaluators: {}",

@@ -28,3 +28,4 @@ toml.workspace = true
 indicatif.workspace = true
 supports-color.workspace = true
 similar.workspace = true
+chrono.workspace = true

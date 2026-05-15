@@ -62,6 +62,35 @@ fn print_expanded(deduped: &[&ScoredFinding]) {
 // any single reason crossed a threshold on its own.
 fn finding_label(f: &guardep_core::Finding) -> String {
     use guardep_core::FindingKind;
+    if matches!(f.kind, FindingKind::Vulnerability | FindingKind::Malware) {
+        return format!("{}{}", f.id, exploit_suffix(f));
+    }
+    if matches!(f.kind, FindingKind::SourceBehavior) {
+        let label = f
+            .details
+            .get("label")
+            .and_then(|v| v.as_str())
+            .unwrap_or("source behavior");
+        let n = f
+            .details
+            .get("occurrences")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        return format!("{label} (x{n})");
+    }
+    if matches!(f.kind, FindingKind::License) {
+        let issue = f
+            .details
+            .get("issue")
+            .and_then(|v| v.as_str())
+            .unwrap_or("issue");
+        let declared = f
+            .details
+            .get("declared")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(none)");
+        return format!("License {issue}: {declared}");
+    }
     if !matches!(f.kind, FindingKind::RiskScore) {
         return f.id.clone();
     }
@@ -78,6 +107,35 @@ fn finding_label(f: &guardep_core::Finding) -> String {
         (Some(s), true) => format!("risk {} ({})", f.package.name, s),
         (None, false) => format!("risk {}: {}", f.package.name, reasons.join(", ")),
         (None, true) => f.id.clone(),
+    }
+}
+
+/// Render KEV / EPSS badges next to a CVE id. Empty when neither is
+/// present so cached/un-enriched findings stay clean.
+fn exploit_suffix(f: &guardep_core::Finding) -> String {
+    let kev = f
+        .details
+        .get("kev")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let percentile = f
+        .details
+        .get("epss")
+        .and_then(|v| v.get("percentile"))
+        .and_then(|v| v.as_f64());
+    let mut parts: Vec<String> = Vec::new();
+    if kev {
+        parts.push("KEV".to_string());
+    }
+    if let Some(p) = percentile {
+        // Show the percentile as p<N> rounded so a 0.991 reads "p99".
+        let n = (p * 100.0).round() as u32;
+        parts.push(format!("EPSS p{n}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", parts.join(" "))
     }
 }
 

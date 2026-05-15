@@ -243,7 +243,9 @@ fn build_plan(report: &FindingsReport, target: FixTarget) -> Plan {
             FindingKind::PostinstallScript
             | FindingKind::RiskScore
             | FindingKind::MissingProvenance
-            | FindingKind::ProvenanceMismatch => {
+            | FindingKind::ProvenanceMismatch
+            | FindingKind::SourceBehavior
+            | FindingKind::License => {
                 manual.push(ManualItem {
                     name: s.finding.package.name.clone(),
                     version: s.finding.package.version.clone(),
@@ -366,6 +368,8 @@ fn kind_label(k: FindingKind) -> &'static str {
         FindingKind::MissingProvenance => "missing provenance",
         FindingKind::ProvenanceMismatch => "provenance mismatch",
         FindingKind::Malware | FindingKind::Vulnerability => "advisory",
+        FindingKind::SourceBehavior => "source behavior",
+        FindingKind::License => "license",
     }
 }
 
