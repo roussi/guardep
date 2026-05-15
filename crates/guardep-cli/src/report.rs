@@ -44,7 +44,7 @@ fn print_expanded(deduped: &[&ScoredFinding]) {
                 "{}@{}",
                 s.finding.package.name, s.finding.package.version
             )),
-            Cell::new(&s.finding.id),
+            Cell::new(finding_label(&s.finding)),
             class,
             Cell::new(format!("{:?}", s.finding.severity)),
             Cell::new(fix),
@@ -52,6 +52,33 @@ fn print_expanded(deduped: &[&ScoredFinding]) {
         ]);
     }
     println!("{table}");
+}
+
+// For RiskScore findings, render the composite score + contributing
+// reasons instead of just the primary-reason slug. Mirrors how Socket
+// surfaces a single quality score per package backed by its inputs,
+// so the table reflects what actually drove the severity (e.g. score
+// 45 from `few-versions + single-maintainer`) rather than implying
+// any single reason crossed a threshold on its own.
+fn finding_label(f: &guardep_core::Finding) -> String {
+    use guardep_core::FindingKind;
+    if !matches!(f.kind, FindingKind::RiskScore) {
+        return f.id.clone();
+    }
+    let score = f.details.get("score").and_then(|v| v.as_u64());
+    let reasons: Vec<&str> = f
+        .details
+        .get("reasons")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|r| r.as_str()).collect())
+        .unwrap_or_default();
+
+    match (score, reasons.is_empty()) {
+        (Some(s), false) => format!("risk {} ({}): {}", f.package.name, s, reasons.join(", ")),
+        (Some(s), true) => format!("risk {} ({})", f.package.name, s),
+        (None, false) => format!("risk {}: {}", f.package.name, reasons.join(", ")),
+        (None, true) => f.id.clone(),
+    }
 }
 
 fn print_collapsed(deduped: &[&ScoredFinding]) {
@@ -68,13 +95,13 @@ fn print_collapsed(deduped: &[&ScoredFinding]) {
         let severity = max_severity(items);
         let class = worst_class(items);
         let targets = fix_targets(items);
-        let ids: Vec<&str> = items.iter().map(|s| s.finding.id.as_str()).collect();
+        let labels: Vec<String> = items.iter().map(|s| finding_label(&s.finding)).collect();
 
         table.add_row(vec![
             row_icon(action, severity),
             Cell::new(key),
             Cell::new(items.len().to_string()),
-            Cell::new(ids.join(", ")),
+            Cell::new(labels.join(", ")),
             class_cell(class, severity),
             Cell::new(format!("{severity:?}")),
             Cell::new(targets.min_label()),
