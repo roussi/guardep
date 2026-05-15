@@ -16,6 +16,20 @@ pub trait Resolver {
     fn resolve(&self, project_root: &Path) -> Result<Vec<PackageRef>>;
 }
 
+// PATH minus `~/.guardep/bin` so subprocess invocations of `npm`/`mvn`
+// don't re-enter the shim and recurse into another guardep audit.
+fn scrub_shim_from_path() -> std::ffi::OsString {
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    let mut shim_dir = std::path::PathBuf::from(&home);
+    shim_dir.push(".guardep");
+    shim_dir.push("bin");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let kept: Vec<std::path::PathBuf> = std::env::split_paths(&path)
+        .filter(|p| p != &shim_dir)
+        .collect();
+    std::env::join_paths(kept).unwrap_or(path)
+}
+
 // ── npm package-lock.json (lockfile v2/v3) ───────────────────────────────
 
 pub struct NpmLockResolver;
@@ -535,6 +549,7 @@ impl Resolver for MavenTreeResolver {
             .arg(format!("-DoutputFile={}", output_path.display()))
             .arg("-DappendOutput=false")
             .current_dir(project_root)
+            .env("PATH", scrub_shim_from_path())
             .status()
             .context("invoke `mvn dependency:tree`")?;
 
@@ -590,15 +605,21 @@ fn parse_tgf(raw: &str) -> Vec<PackageRef> {
 
 // ── Dry-run resolver ─────────────────────────────────────────────────────
 //
-// `npm install --dry-run --json` resolves what *would* be installed
-// without writing to disk. We use this when intercepting a CLI command
-// like `npm install foo@latest`: the existing lockfile doesn't yet
-// include `foo`, so reading it would let `foo` slip past the audit.
-// Dry-run gives us the resolved graph including the new package.
+// Resolves the full dependency graph that `npm install [pkg...]` *would*
+// produce, without modifying the user's project. We copy `package.json`
+// (and the existing lockfile, if any, to seed peer/transitive resolution)
+// into a temp dir, run `npm install --package-lock-only --ignore-scripts`
+// there to materialize a lockfile, then parse it.
 //
-// Important: dry-run STILL EXECUTES `prepare` lifecycle scripts on git
-// dependencies, so this is not a complete defense for git: deps. For
-// registry deps (the ~99% case) it's safe.
+// Why not `npm install --dry-run --json`: on npm 11, `--dry-run`
+// combined with `--package-lock-only` returns only a {add, remove} diff
+// and writes no lockfile, leaving us with an empty package set that
+// silently passes audit. Materializing into a temp dir is reliable
+// across npm versions.
+//
+// `--ignore-scripts` blocks postinstall/preinstall execution from the
+// resolved packages. npm still runs `prepare` for git deps; pre-install
+// audit cannot fully defend git: refs.
 
 use std::process::Command;
 
@@ -607,7 +628,6 @@ pub struct NpmDryRunResolver {
 }
 
 impl NpmDryRunResolver {
-    /// `args` are forwarded to npm: e.g. `["install", "foo@latest"]`.
     pub fn new(args: Vec<String>) -> Self {
         Self { args }
     }
@@ -615,54 +635,55 @@ impl NpmDryRunResolver {
 
 impl Resolver for NpmDryRunResolver {
     fn resolve(&self, project_root: &Path) -> Result<Vec<PackageRef>> {
-        let output = Command::new("npm")
-            .args(&self.args)
-            .arg("--dry-run")
-            .arg("--json")
+        let manifest = project_root.join("package.json");
+        if !manifest.exists() {
+            anyhow::bail!("package.json not found in {}", project_root.display());
+        }
+
+        let workdir = tempfile::tempdir().context("create temp dir for dry-run resolution")?;
+        std::fs::copy(&manifest, workdir.path().join("package.json"))
+            .context("copy package.json into temp dir")?;
+        let existing_lock = project_root.join("package-lock.json");
+        if existing_lock.exists() {
+            std::fs::copy(&existing_lock, workdir.path().join("package-lock.json"))
+                .context("seed temp dir with existing lockfile")?;
+        }
+        let existing_npmrc = project_root.join(".npmrc");
+        if existing_npmrc.exists() {
+            let _ = std::fs::copy(&existing_npmrc, workdir.path().join(".npmrc"));
+        }
+
+        let mut cmd = Command::new("npm");
+        cmd.args(&self.args)
             .arg("--package-lock-only")
-            .current_dir(project_root)
+            .arg("--ignore-scripts")
+            .current_dir(workdir.path())
+            .env("PATH", scrub_shim_from_path());
+        let output = cmd
             .output()
-            .context("invoke `npm install --dry-run --json`")?;
+            .context("invoke `npm install --package-lock-only --ignore-scripts`")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!(
-                "npm dry-run exited {}: {}",
+                "npm resolution exited {}: {}",
                 output.status.code().unwrap_or(-1),
                 stderr.trim()
             );
         }
 
-        let body = String::from_utf8_lossy(&output.stdout);
-        let parsed: serde_json::Value = serde_json::from_str(&body)
-            .with_context(|| format!("parse npm dry-run JSON: {body}"))?;
-
-        let mut out: BTreeSet<PackageRef> = BTreeSet::new();
-
-        // Newer npm (10+) emits `{"added":[{"name":..,"version":..}],
-        // "removed":[],...}`. We collect added + remaining.
-        if let Some(added) = parsed.get("added").and_then(|v| v.as_array()) {
-            for entry in added {
-                if let (Some(name), Some(version)) = (
-                    entry.get("name").and_then(|v| v.as_str()),
-                    entry.get("version").and_then(|v| v.as_str()),
-                ) {
-                    out.insert(PackageRef::new(Ecosystem::Npm, name, version));
-                }
-            }
+        let temp_lock = workdir.path().join("package-lock.json");
+        if !temp_lock.exists() {
+            anyhow::bail!(
+                "npm resolution did not produce a lockfile at {}",
+                temp_lock.display()
+            );
         }
 
-        // We additionally pull in everything in the existing lockfile
-        // (post-dry-run npm has updated package-lock in the cwd because
-        // --package-lock-only without --no-save mutates the file).
-        // Read the freshly-resolved lockfile to include transitive deps
-        // that are unchanged.
-        if let Ok(extra) = NpmLockResolver.resolve(project_root) {
-            for p in extra {
-                out.insert(p);
-            }
+        let pkgs = NpmLockResolver.resolve(workdir.path())?;
+        if pkgs.is_empty() {
+            anyhow::bail!("npm resolution produced an empty lockfile (no dependencies parsed)");
         }
-
-        Ok(out.into_iter().collect())
+        Ok(pkgs)
     }
 }

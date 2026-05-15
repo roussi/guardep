@@ -38,10 +38,29 @@ cargo build --release
 
 ./target/release/guardep audit --path ./my-project
 
-# Install shims (creates ~/.guardep/bin/{npm,pnpm,yarn,mvn,gradle})
+# Install shims and wire PATH in your shell rc files
 ./target/release/guardep install-shims
-export PATH="$HOME/.guardep/bin:$PATH"
 ```
+
+`install-shims` does two things:
+
+1. Creates symlinks in `~/.guardep/bin/{npm,pnpm,yarn}` that point at the guardep binary.
+2. Edits your shell rc files (`~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.config/fish/config.fish` on Unix; `$PROFILE` on Windows PowerShell) to prepend `~/.guardep/bin` to `PATH`.
+
+Each rc file is backed up to `<file>.guardep.bak` once before the first edit, and changes sit between marker comments (`# >>> guardep-shim >>>` / `# <<< guardep-shim <<<`) so removal is exact. On a tty the command asks before editing; in CI / piped input it proceeds.
+
+Flags:
+- `--no-wire-path` — symlink only, you add to `PATH` yourself.
+- `--yes` / `-y` — skip the interactive prompt.
+- `--force` — overwrite existing symlinks and re-inject the rc block.
+
+Restart your shell (or `source ~/.zshrc`) to activate. To revert:
+
+```bash
+./target/release/guardep uninstall-shims
+```
+
+Removes the symlinks and strips the marker block from every rc file. Backups stay in place.
 
 ## Use
 
@@ -57,14 +76,19 @@ guardep audit --path ./frontend --fail-on warn             # CI: exit 1 on warni
 
 ### Use as a shim
 
-```bash
-guardep install-shims
-export PATH="$HOME/.guardep/bin:$PATH"
+After `guardep install-shims` and a shell restart:
 
+```bash
 cd ./my-project
 npm install      # audited; blocks if malware/critical
 pnpm install     # audited
 yarn install     # audited
+```
+
+Bypass for one command (calls real binary directly, skips audit):
+
+```bash
+$(which -a npm | grep -v guardep | head -1) install
 ```
 
 Exit codes:

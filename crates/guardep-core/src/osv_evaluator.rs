@@ -1,8 +1,7 @@
 //! OSV.dev advisory evaluator.
 //!
-//! Wraps the existing OSV client + SQLite cache + semver matcher as an
-//! `Evaluator`. Emits `Finding`s directly — no legacy `MatchResult`
-//! intermediate step.
+//! Wraps the OSV client, KV cache, and version-range matcher as an
+//! `Evaluator`. Emits `Finding`s directly into the unified pipeline.
 
 use crate::advisory::{Advisory, ThreatClass as AdvClass};
 use crate::cache::{Cache, KvCache};
@@ -63,7 +62,7 @@ impl Evaluator for OsvEvaluator {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("OSV batch failed: {e} — per-package fallback");
+                    tracing::warn!("OSV batch failed: {e}; per-package fallback");
                     for pkg in &to_fetch {
                         let advs = self.client.query(pkg).await.unwrap_or_default();
                         let _ = cache.put(pkg, &advs);

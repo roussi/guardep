@@ -124,7 +124,7 @@ fn qualifier_rank(q: &str) -> Option<i32> {
 }
 
 /// Rank used when a qualifier appears against an absent counterpart.
-/// "Release" is rank 5 — between snapshot and sp.
+/// "Release" is rank 5: between snapshot and sp.
 const RELEASE_RANK: i32 = 5;
 
 fn cmp_components(a: &[Component], b: &[Component]) -> Ordering {

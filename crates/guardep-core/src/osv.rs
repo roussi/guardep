@@ -43,7 +43,7 @@ impl OsvClient {
             .collect())
     }
 
-    /// Batch query — chunks into groups of BATCH_SIZE.
+    /// Batch query: chunks into groups of BATCH_SIZE.
     /// Returns advisories aligned by index with `packages`.
     pub async fn query_batch(&self, packages: &[PackageRef]) -> Result<Vec<Vec<Advisory>>> {
         let mut out: Vec<Vec<Advisory>> = vec![Vec::new(); packages.len()];
@@ -71,7 +71,7 @@ impl OsvClient {
                 if stub_vulns.is_empty() {
                     continue;
                 }
-                // Batch returns only IDs — hydrate full records.
+                // Batch returns only IDs; hydrate full records.
                 let mut full: Vec<Advisory> = Vec::with_capacity(stub_vulns.len());
                 for stub in stub_vulns {
                     match self.fetch_vuln(&stub.id).await {

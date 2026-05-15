@@ -39,12 +39,11 @@ pub struct Policy {
     // ── Postinstall script policy (Phase 1A) ─────────────────────────────
     /// How to react when a package ships a postinstall/install/preinstall
     /// script that scored 0 on the heuristic detector (no suspicious
-    /// patterns matched). Default is `allow` — most install scripts
+    /// patterns matched). Default is `allow`: most install scripts
     /// (`node install.js`, `node-gyp rebuild`) are benign and surfacing
     /// every one creates noise. Set to `warn` to audit every script.
     #[serde(default = "default_allow")]
     pub postinstall_default: Action,
-    /// Action when heuristic detector flags a script as suspicious
     /// Action when the heuristic flags a script as suspicious
     /// (Medium/High by combined regex+AST score, but with no
     /// unambiguously-malicious pattern). Default `warn` because
@@ -56,7 +55,7 @@ pub struct Policy {
     /// Action when the heuristic flags a script as critical (an
     /// unambiguously-malicious pattern fired: credential file read,
     /// base64-decode chained with dynamic code execution, etc).
-    /// Always blocks by default — these patterns have no innocent
+    /// Always blocks by default; these patterns have no innocent
     /// explanation.
     #[serde(default = "default_block")]
     pub postinstall_critical: Action,
@@ -175,7 +174,9 @@ impl Policy {
         Ok(cfg.policy.unwrap_or_default())
     }
 
-    /// Legacy advisory decision path used by `matcher::evaluate`.
+    /// Legacy advisory decision path. Retained for callers that still
+    /// reason about `(ThreatClass, Severity)` pairs; new code should
+    /// prefer `decide_finding`.
     pub fn decide(&self, class: ThreatClass, severity: Severity) -> Action {
         match class {
             ThreatClass::Malware => self.malware,
@@ -337,10 +338,10 @@ mod tests {
             p.decide_finding(FindingKind::PostinstallScript, FindingSeverity::Medium),
             Action::Warn
         );
-        // Score-0 / Low postinstall now defaults to Allow — most npm
-        // install scripts are benign (`node install.js`, `node-gyp
-        // rebuild`). Users opt into auditing them by setting
-        // `postinstall_default = "warn"` in guardep.toml.
+        // Score-0 / Low postinstall now defaults to Allow because
+        // most npm install scripts are benign (`node install.js`,
+        // `node-gyp rebuild`). Users opt into auditing them by
+        // setting `postinstall_default = "warn"` in guardep.toml.
         assert_eq!(
             p.decide_finding(FindingKind::PostinstallScript, FindingSeverity::Low),
             Action::Allow

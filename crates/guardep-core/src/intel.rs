@@ -130,7 +130,7 @@ fn is_legit_relative(name: &str, top: &str) -> bool {
 
 const DEFAULT_BASE_URL: &str = "https://registry.npmjs.org";
 
-/// Reduced metadata snapshot — what we cache and score on.
+/// Reduced metadata snapshot: what we cache and score on.
 ///
 /// Public to support the validation-set integration test in `tests/`.
 /// External callers should not depend on the field shape stability.
@@ -168,7 +168,7 @@ impl IntelEvaluator {
         Self::with_base_url(cache_path, DEFAULT_BASE_URL.to_string())
     }
 
-    /// Test helper — override the registry base URL.
+    /// Test helper: override the registry base URL.
     pub fn with_base_url(cache_path: PathBuf, base_url: String) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("guardep-intel/", env!("CARGO_PKG_VERSION")))
@@ -218,7 +218,7 @@ impl IntelEvaluator {
 
         // Best-effort downloads lookup. The downloads API lives at a
         // different host and only resolves unscoped names; failures are
-        // silently ignored — we just leave `weekly_downloads = None`.
+        // silently ignored, leaving `weekly_downloads = None`.
         if !name.starts_with('@') {
             snap.weekly_downloads = self.fetch_weekly_downloads(name).await.ok();
         }
@@ -267,7 +267,7 @@ impl Evaluator for IntelEvaluator {
 
         let cache = self.open_cache(policy.cache_refresh_hours)?;
 
-        // Phase 1: cache lookup — sequential, hits SQLite (fast).
+        // Phase 1: cache lookup, sequential against SQLite (fast).
         let mut hits: Vec<(PackageRef, IntelSnapshot)> = Vec::new();
         let mut misses: Vec<PackageRef> = Vec::new();
         for pkg in packages {
@@ -347,14 +347,9 @@ fn snapshot_from_metadata(body: &Value) -> IntelSnapshot {
         _ => None,
     };
 
-    // We don't know the installed version at snapshot time — leave None.
-    // The evaluator overlays it after fetch using time[<version>] when
-    // available. To preserve that, we encode the *full* time map below
-    // by stashing one representative timestamp. But because the spec
-    // says we should look up time[<installed-version>], we instead
-    // recover it later from the cached snapshot's latest as a fallback.
-    // Simplest correct approach: capture the latest version's time as a
-    // proxy and let scoring use whichever is present.
+    // We don't know the installed version at snapshot time. As a proxy,
+    // capture the latest version's publish time and let scoring use
+    // whichever timestamp is present.
     let installed_published_at = latest_published_at.clone();
 
     let has_repository = body
@@ -393,7 +388,7 @@ fn days_since(ts: &str, now: DateTime<Utc>) -> Option<i64> {
     Some((now - dt).num_days())
 }
 
-/// Reasons in priority order — first match wins for the `id` slug.
+/// Reasons in priority order; first match wins for the `id` slug.
 /// `single-maintainer` is intentionally last because it's the median
 /// state of npm and almost never the most actionable reason in a
 /// composite finding.
@@ -467,9 +462,9 @@ fn score_package(
         }
     }
 
-    // Typosquat detection — but suppress when the candidate is itself
-    // a popular package (Fix 5: reputation cross-check). E.g. `cypress`
-    // is Lev-distance 2 from `express` but has 7M+ weekly downloads.
+    // Typosquat detection, suppressed when the candidate is itself a
+    // popular package (reputation cross-check). E.g. `cypress` is
+    // Lev-distance 2 from `express` but has 7M+ weekly downloads.
     let typosquat_target = typosquat_candidate(&pkg.name);
     let typosquat_target = match typosquat_target {
         Some(t) if !looks_legitimately_popular(snap) => Some(t),
@@ -500,9 +495,8 @@ fn score_package(
 
     // Suppress single-maintainer-only findings: this is the median state
     // of npm and emitting one warning per single-maintainer package is
-    // pure noise. When opted in via `show_info`, surface
-    // them as `Info` so they appear in --report-single-maintainer mode
-    // without triggering warn/block at any policy.
+    // pure noise. When opted in via `show_info`, surface them as `Info`
+    // so they appear without triggering warn/block at any policy.
     let only_reason_is_single_maintainer =
         reasons.len() == 1 && reasons[0] == "single-maintainer";
 
@@ -595,8 +589,8 @@ pub(crate) fn lev_distance(a: &str, b: &str) -> usize {
 }
 
 /// Maximum allowed Lev distance, scaled by name length. Short names
-/// (4-5 chars) collide too easily under distance 2 — `pend` vs `pino`
-/// is distance 2, `temp` vs `tape` is distance 2. Require an exact
+/// (4-5 chars) collide too easily under distance 2 (`pend` vs `pino`
+/// is distance 2, `temp` vs `tape` is distance 2). Require an exact
 /// match for very short names; otherwise allow up to distance 2 only
 /// when the names are at least 6 characters.
 fn max_distance_for(len: usize) -> usize {
@@ -640,10 +634,10 @@ fn typosquat_candidate(name: &str) -> Option<&'static str> {
     None
 }
 
-/// Reputation cross-check (Fix 5). Before flagging a typosquat, decide
-/// whether the candidate is itself a legitimate package whose name
-/// happens to be Lev-close to a top-list entry. Returns true when the
-/// typosquat flag should be SUPPRESSED.
+/// Reputation cross-check. Before flagging a typosquat, decide whether
+/// the candidate is itself a legitimate package whose name happens to
+/// be Lev-close to a top-list entry. Returns true when the typosquat
+/// flag should be SUPPRESSED.
 ///
 /// Signals (any one suppresses):
 ///   - Weekly downloads >= 100k (when the npm downloads API works)
@@ -771,12 +765,12 @@ mod tests {
         let policy = Policy::default();
 
         // 79: maintainers=1 (25) + few-versions (15) + fresh-publish (20)
-        // + abandoned (15) + no-source (10) = 85 → reduce abandoned/no-source.
-        // Construct exact 79: 25 + 15 + 20 + 15 + 4? No — weights are fixed.
-        // We instead validate the boundary mapping function-style by
-        // synthesising snapshots and checking the resulting severity.
+        // + abandoned (15) + no-source (10) = 85, reduce abandoned/no-source.
+        // Weights are fixed, so validate the boundary mapping function-
+        // style by synthesising snapshots and checking the resulting
+        // severity.
 
-        // 80 → Critical: 25 + 30 (typosquat) + 15 + 10 = 80. Use a
+        // 80 -> Critical: 25 + 30 (typosquat) + 15 + 10 = 80. Use a
         // typosquat name to land exactly there.
         let snap_80 = make_snapshot(
             1,
@@ -792,7 +786,7 @@ mod tests {
         let f = score_package(&pkg, &snap_80, &policy, None).expect("emit");
         assert_eq!(f.severity, FindingSeverity::Critical);
 
-        // 65 → High (just normal package, no typosquat):
+        // 65 -> High (just normal package, no typosquat):
         // single-maintainer (25) + few-versions (15) + abandoned (15) + no-source (10) = 65
         let old = (Utc::now() - Duration::days(policy.warn_if_unmaintained_days as i64 + 30))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -817,7 +811,7 @@ mod tests {
         let f = score_package(&pkg, &snap_40, &policy, None).expect("emit");
         assert_eq!(f.severity, FindingSeverity::Medium);
 
-        // Low: 20-39. single-maintainer (25) only = 25 — but
+        // Low: 20-39. single-maintainer (25) only = 25, but
         // single-maintainer-only is suppressed by default. Verify both
         // paths: default policy returns None; opt-in policy returns Info.
         let snap_25 = make_snapshot(1, 50, None, None, None, None, true);
@@ -832,7 +826,7 @@ mod tests {
             .expect("emit when reporting enabled");
         assert_eq!(f.severity, FindingSeverity::Info);
 
-        // <20 → no emit. Healthy: 5 maintainers, lots of versions, repo present
+        // <20 -> no emit. Healthy: 5 maintainers, lots of versions, repo present
         let snap_low = make_snapshot(5, 50, None, None, None, None, true);
         let pkg = npm("safepkgname", "1.0.0");
         assert!(score_package(&pkg, &snap_low, &policy, None).is_none());
@@ -954,9 +948,9 @@ mod tests {
     #[tokio::test]
     async fn block_typosquats_forces_high() {
         let server = MockServer::start().await;
-        // Suspicious metadata so the popularity cross-check (Fix 5)
-        // does NOT suppress the typosquat: single maintainer, few
-        // versions, no repository.
+        // Suspicious metadata so the popularity cross-check does NOT
+        // suppress the typosquat: single maintainer, few versions,
+        // no repository.
         let yesterday = rfc3339_days_ago(1);
         let body = metadata(
             1,
@@ -1029,14 +1023,13 @@ mod tests {
         let policy = Policy::default();
         let f = score_package(&pkg, &snap, &policy, Some(yesterday))
             .expect("composite signal should still emit");
-        // Above Info — composite signals don't get demoted.
+        // Above Info: composite signals don't get demoted.
         assert!(f.severity > FindingSeverity::Info);
     }
 
-    /// Reputation cross-check (Fix 5): a name that LOOKS like a
-    /// typosquat but ships with multiple maintainers + repo + many
-    /// versions is treated as legitimate and the typosquat flag is
-    /// suppressed.
+    /// Reputation cross-check: a name that LOOKS like a typosquat but
+    /// ships with multiple maintainers + repo + many versions is
+    /// treated as legitimate and the typosquat flag is suppressed.
     #[tokio::test]
     async fn typosquat_suppressed_when_legit_metadata() {
         let server = MockServer::start().await;

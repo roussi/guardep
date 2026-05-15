@@ -44,7 +44,7 @@ impl EvaluatorRegistry {
                         f
                     }
                     Err(err) => {
-                        tracing::warn!(evaluator = name, %err, "evaluator failed — skipping");
+                        tracing::warn!(evaluator = name, %err, "evaluator failed -- skipping");
                         Vec::new()
                     }
                 }

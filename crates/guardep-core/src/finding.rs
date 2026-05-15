@@ -10,8 +10,8 @@ use crate::policy::{Action, Policy};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-/// Identifier classes findings carry — used by the policy engine to decide
-/// which knob applies. Each new evaluator adds a variant.
+/// Identifier classes findings carry. Used by the policy engine to decide
+/// which knob applies; each new evaluator adds a variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingKind {
@@ -45,9 +45,9 @@ impl FindingKind {
 
 /// Severity tier shared across finding kinds. Vulnerabilities use it for
 /// CVSS bucketing; risk/postinstall/provenance findings map their internal
-/// score onto this scale. `Info` is below `Low` and never blocks/warns
-/// at default policy — it exists so callers can opt into surfacing
-/// signals that are typically noise (e.g. single-maintainer alone).
+/// score onto this scale. `Info` is below `Low` and never blocks/warns at
+/// default policy; it exists so callers can opt into surfacing signals
+/// that are typically noise (e.g. single-maintainer alone).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum FindingSeverity {
@@ -67,7 +67,7 @@ pub struct Finding {
     pub package: PackageRef,
     /// What kind of issue this is
     pub kind: FindingKind,
-    /// Stable identifier — for advisories: GHSA/CVE/MAL ID;
+    /// Stable identifier. For advisories: GHSA/CVE/MAL ID;
     /// for postinstall: script SHA-256;
     /// for risk: deterministic policy slug ("typosquat:lodash", "fresh-publish");
     /// for provenance: "missing:<pkg>@<ver>" or "mismatch:<pkg>@<ver>".
@@ -107,7 +107,7 @@ impl Finding {
     ///
     /// Confirmed-malware kinds always show as MALWARE. Heuristic kinds
     /// (postinstall script, risk score) only escalate to MALWARE at
-    /// `Critical` severity — Low/Medium hits are uncertain enough to
+    /// `Critical` severity; Low/Medium hits are uncertain enough to
     /// stay in the CVE column.
     pub fn display_class(&self) -> DisplayClass {
         match self.kind {
@@ -149,8 +149,8 @@ impl DisplayClass {
 #[async_trait]
 pub trait Evaluator: Send + Sync {
     fn name(&self) -> &'static str;
-    /// Whether this evaluator is enabled by current policy. Cheap check —
-    /// allows an audit run to skip wiring an evaluator entirely when the
+    /// Whether this evaluator is enabled by current policy. Cheap check
+    /// so an audit run can skip wiring an evaluator entirely when the
     /// user disabled it.
     fn enabled(&self, policy: &Policy) -> bool;
     async fn evaluate(&self, packages: &[PackageRef], policy: &Policy) -> anyhow::Result<Vec<Finding>>;

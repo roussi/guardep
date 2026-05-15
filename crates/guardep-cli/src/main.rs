@@ -114,8 +114,25 @@ enum Cmd {
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// Install symlinks (npm/mvn/gradle) into ~/.guardep/bin.
+    /// Install symlinks (npm/pnpm/yarn) into ~/.guardep/bin and wire
+    /// PATH in the user's shell rc files (zsh/bash/fish on Unix,
+    /// PowerShell `$PROFILE` on Windows). Pass --no-wire-path to
+    /// skip rc file edits.
     InstallShims {
+        #[arg(long)]
+        force: bool,
+        /// Skip editing shell rc files. Symlinks are created either way;
+        /// you'll need to add `~/.guardep/bin` to PATH manually.
+        #[arg(long)]
+        no_wire_path: bool,
+        /// Skip the interactive confirmation before editing rc files.
+        /// Use in CI or scripted installs.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Remove guardep shim symlinks from ~/.guardep/bin and strip the
+    /// guardep PATH block from shell rc files.
+    UninstallShims {
         #[arg(long)]
         force: bool,
     },
@@ -163,7 +180,10 @@ async fn main() -> Result<()> {
         Cmd::Fix { path, target, apply, yes } => {
             commands::fix::run(&path, target.into(), apply, yes).await
         }
-        Cmd::InstallShims { force } => commands::install_shims::run(force),
+        Cmd::InstallShims { force, no_wire_path, yes } => {
+            commands::install_shims::run(force, !no_wire_path, yes)
+        }
+        Cmd::UninstallShims { force } => commands::install_shims::uninstall(force),
         Cmd::Shim { tool, args } => shim::run(&tool, &args).await,
         Cmd::Info => commands::info::run(),
         Cmd::Cache(CacheCmd::Prune { days }) => commands::cache::prune(days),

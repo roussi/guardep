@@ -1,14 +1,16 @@
 //! Postinstall script evaluator.
 //!
 //! Inspects each installed npm package's `package.json` for `preinstall`,
-//! `install`, and `postinstall` script entries. Each script is hashed and
-//! either skipped (allow-listed by SHA-256), or scored by a deterministic
-//! regex-based heuristic detector. Findings are emitted with severities
-//! mapped from the heuristic score onto [`FindingSeverity`].
+//! `install`, and `postinstall` script entries. Each script is scored by a
+//! deterministic regex-based heuristic and an optional AST analysis of any
+//! referenced JS file. Findings are emitted with severities mapped from
+//! the combined score onto [`FindingSeverity`]; suppression is the
+//! responsibility of `policy.finding_allowlist`, keyed by the script's
+//! SHA-256 in the finding id.
 //!
-//! No shell is invoked — scripts are inspected as opaque strings. This
-//! evaluator runs locally and is therefore safe to call before any package
-//! lifecycle hook would actually execute.
+//! No shell is invoked: scripts are inspected as opaque strings, so this
+//! evaluator is safe to call before any package lifecycle hook would
+//! actually execute.
 
 use crate::ecosystem::{Ecosystem, PackageRef};
 use crate::finding::{Evaluator, Finding, FindingKind, FindingSeverity};
@@ -65,12 +67,12 @@ impl Evaluator for PostinstallEvaluator {
             let path = self.package_json_path(&pkg.name);
             let raw = match std::fs::read_to_string(&path) {
                 Ok(s) => s,
-                Err(_) => continue, // package not installed — skip silently
+                Err(_) => continue, // package not installed; skip silently
             };
 
             let parsed: serde_json::Value = match serde_json::from_str(&raw) {
                 Ok(v) => v,
-                Err(_) => continue, // malformed package.json — skip silently
+                Err(_) => continue, // malformed package.json; skip silently
             };
 
             let scripts = match parsed.get("scripts").and_then(|v| v.as_object()) {
@@ -203,12 +205,9 @@ fn referenced_js_file(script: &str, pkg_dir: &std::path::Path) -> Option<std::pa
     }
 }
 
-/// Convert the AST detector's findings into a delta to add to the
-/// regex-based score, plus rule names to merge into the matched_rules
-/// list. Each AST rule has a fixed weight; `score_ast` returns
-/// (extra_score, rule_labels).
 /// Translate AST findings into a regex-compatible score delta + rule
-/// labels.
+/// labels. Each AST rule has a fixed weight; the function returns
+/// `(extra_score, rule_labels)`.
 ///
 /// Weights here are calibrated alongside `AstRule::default_severity`
 /// (see that fn's docstring): only patterns with no innocent
@@ -233,7 +232,7 @@ fn score_ast(findings: &[postinstall_ast::AstFinding]) -> (i32, Vec<&'static str
             AstRule::ProcessExec => (2, "ast:process-exec"),
             AstRule::NetworkCall => (2, "ast:network-call"),
         };
-        // Each rule contributes once per script — even 50 dynamic
+        // Each rule contributes once per script; even 50 dynamic
         // requires aren't 50x as bad as one.
         if !rules.contains(&label) {
             score += delta;
