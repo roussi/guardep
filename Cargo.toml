@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/guardep-core", "crates/guardep-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Abdelghani Roussi"]
+repository = "https://github.com/aroussi/guardep"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "process"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+semver = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+comfy-table = "7"
+owo-colors = "4"
+directories = "5"
+chrono = { version = "0.4", features = ["serde"] }

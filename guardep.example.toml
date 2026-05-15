@@ -1,0 +1,17 @@
+[policy]
+# Always block compromised publishes (Shai-Hulud-style hijacks).
+malware = "block"
+
+# CVE policy by severity.
+critical_cve = "block"
+high_cve = "warn"
+medium_cve = "allow"
+low_cve = "allow"
+
+# Cache TTL for OSV lookups (hours).
+cache_refresh_hours = 6
+
+# Suppress specific findings. Format: "name@version".
+allowlist = [
+  # "axios@1.13.2",
+]
