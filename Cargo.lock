@@ -460,6 +460,7 @@ dependencies = [
  "directories",
  "guardep-core",
  "owo-colors",
+ "semver",
  "serde",
  "serde_json",
  "tokio",

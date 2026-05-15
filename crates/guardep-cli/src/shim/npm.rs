@@ -27,12 +27,12 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
             "!".yellow()
         );
         run_real(tool, args)?;
-        return audit::run(&project_root, audit::Format::Table).await;
+        return audit::run(&project_root, audit::Format::Table, false).await;
     }
 
     let verdict = audit::evaluate_project(&project_root).await?;
     if verdict.should_block() {
-        crate::report::print_verdict(&verdict);
+        crate::report::print_verdict(&verdict, false);
         eprintln!(
             "\n{} {} install blocked by guardep policy",
             "✗".red().bold(),
@@ -41,7 +41,7 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
         std::process::exit(2);
     }
     if verdict.has_warnings() {
-        crate::report::print_verdict(&verdict);
+        crate::report::print_verdict(&verdict, false);
     }
 
     run_real(tool, args)

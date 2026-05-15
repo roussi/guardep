@@ -16,11 +16,11 @@ pub enum Format {
     Json,
 }
 
-pub async fn run(path: &Path, format: Format) -> Result<()> {
+pub async fn run(path: &Path, format: Format, collapse: bool) -> Result<()> {
     let verdict = evaluate_project(path).await?;
     match format {
-        Format::Table => crate::report::print_verdict(&verdict),
-        Format::Json => crate::report::print_json(&verdict)?,
+        Format::Table => crate::report::print_verdict(&verdict, collapse),
+        Format::Json => crate::report::print_json(&verdict, collapse)?,
     }
     if verdict.should_block() {
         std::process::exit(2);

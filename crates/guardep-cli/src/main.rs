@@ -37,6 +37,9 @@ enum Cmd {
         path: PathBuf,
         #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
         format: OutputFormat,
+        /// Group findings by package@version, joining advisory IDs with commas.
+        #[arg(long)]
+        collapse: bool,
     },
     /// Install symlinks (npm/mvn/gradle) into ~/.guardep/bin.
     InstallShims {
@@ -70,7 +73,9 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Audit { path, format } => commands::audit::run(&path, format.into()).await,
+        Cmd::Audit { path, format, collapse } => {
+            commands::audit::run(&path, format.into(), collapse).await
+        }
         Cmd::InstallShims { force } => commands::install_shims::run(force),
         Cmd::Shim { tool, args } => shim::run(&tool, &args).await,
         Cmd::Info => commands::info::run(),
