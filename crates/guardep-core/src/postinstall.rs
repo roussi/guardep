@@ -13,6 +13,7 @@
 use crate::ecosystem::{Ecosystem, PackageRef};
 use crate::finding::{Evaluator, Finding, FindingKind, FindingSeverity};
 use crate::policy::{Action, Policy};
+use crate::postinstall_ast::{self, AstRule, AstSeverity};
 use anyhow::Result;
 use async_trait::async_trait;
 use regex::Regex;
@@ -84,24 +85,76 @@ impl Evaluator for PostinstallEvaluator {
                 };
 
                 let sha = sha256_hex(script);
-                if policy.is_script_hash_allowed(&sha) {
+                let script_allowlisted = policy.is_script_hash_allowed(&sha);
+
+                let (mut score, mut matched_rules) = score_script(script);
+                // The shell-string allowlist suppresses regex-tier
+                // signals (the script "node install.js" is benign by
+                // shape) but it must NOT suppress AST analysis of the
+                // referenced JS file, since identical shell wrappers
+                // can wrap entirely different JS payloads. So zero out
+                // the regex score when allowlisted but still run the
+                // AST analyzer below.
+                if script_allowlisted {
+                    score = 0;
+                    matched_rules.clear();
+                }
+
+                // If the script invokes a JS file shipped in the
+                // package, parse and analyse it. AST findings can
+                // raise the score and add labels.
+                let pkg_dir = path.parent().unwrap_or(std::path::Path::new("."));
+                let ast_findings = match referenced_js_file(script, pkg_dir) {
+                    Some(js_path) => postinstall_ast::analyze_file(&js_path),
+                    None => Vec::new(),
+                };
+                let (ast_score, ast_rules) = score_ast(&ast_findings);
+                score += ast_score;
+                for r in ast_rules {
+                    matched_rules.push(r);
+                }
+
+                // If the script was allowlisted AND AST found nothing,
+                // skip silently — that's the user's intent.
+                if script_allowlisted && ast_findings.is_empty() {
                     continue;
                 }
 
-                let (score, matched_rules) = score_script(script);
-                let severity = match score {
+                let regex_sev = match score {
                     s if s >= 60 => FindingSeverity::Critical,
                     s if s >= 30 => FindingSeverity::High,
                     s if s >= 15 => FindingSeverity::Medium,
                     s if s > 0 => FindingSeverity::Low,
-                    _ => {
-                        // score == 0: only emit when default policy isn't Allow.
-                        if policy.postinstall_default == Action::Allow {
-                            continue;
-                        }
-                        FindingSeverity::Low
-                    }
+                    _ => FindingSeverity::Unknown,
                 };
+                let severity = merge_severity(regex_sev, &ast_findings);
+                if severity == FindingSeverity::Unknown {
+                    // score == 0 AND no AST hits.
+                    if policy.postinstall_default == Action::Allow {
+                        continue;
+                    }
+                    findings.push(Finding {
+                        package: pkg.clone(),
+                        kind: FindingKind::PostinstallScript,
+                        id: format!("script:{}:{}", kind, sha),
+                        aliases: vec![],
+                        summary: format!(
+                            "{} script in {} (score 0; surfaced because postinstall_default = warn)",
+                            kind, pkg.name
+                        ),
+                        severity: FindingSeverity::Low,
+                        fixed_versions: vec![],
+                        references: vec![],
+                        details: serde_json::json!({
+                            "script_kind": kind,
+                            "sha256": sha,
+                            "score": 0,
+                            "matched_rules": matched_rules,
+                            "script_preview": script.chars().take(120).collect::<String>(),
+                        }),
+                    });
+                    continue;
+                }
 
                 findings.push(Finding {
                     package: pkg.clone(),
@@ -124,6 +177,12 @@ impl Evaluator for PostinstallEvaluator {
                         "score": score,
                         "matched_rules": matched_rules,
                         "script_preview": script.chars().take(120).collect::<String>(),
+                        "ast_findings": ast_findings.iter().map(|f| serde_json::json!({
+                            "rule": format!("{:?}", f.rule),
+                            "severity": format!("{:?}", f.severity),
+                            "line": f.line,
+                            "detail": f.detail,
+                        })).collect::<Vec<_>>(),
                     }),
                 });
             }
@@ -137,6 +196,91 @@ fn sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+/// Look at a script string and return the JS file it would execute, if
+/// the pattern is `node X.js` (with optional `./` prefix and trailing
+/// args). `pkg_dir` is the package's on-disk root.
+fn referenced_js_file(script: &str, pkg_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let trimmed = script.trim();
+    // First token must be `node`. Reject shell chains like
+    // `cmd && node X.js` because we can't reason about preceding side
+    // effects with a simple parser.
+    let (head, rest) = trimmed.split_once(' ')?;
+    if head != "node" {
+        return None;
+    }
+    let first_arg = rest.split_whitespace().next()?;
+    if !first_arg.ends_with(".js") && !first_arg.ends_with(".mjs") && !first_arg.ends_with(".cjs") {
+        return None;
+    }
+    let candidate = pkg_dir.join(first_arg.trim_start_matches("./"));
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// Convert the AST detector's findings into a delta to add to the
+/// regex-based score, plus rule names to merge into the matched_rules
+/// list. Each AST rule has a fixed weight; `score_ast` returns
+/// (extra_score, rule_labels).
+fn score_ast(findings: &[postinstall_ast::AstFinding]) -> (i32, Vec<&'static str>) {
+    let mut score = 0i32;
+    let mut rules: Vec<&'static str> = Vec::new();
+    for f in findings {
+        let (delta, label) = match f.rule {
+            AstRule::Base64EvalChain => (40, "ast:base64-eval-chain"),
+            AstRule::CredentialFileRead => (40, "ast:credential-read"),
+            AstRule::DynamicCodeExec => (25, "ast:dynamic-code-exec"),
+            AstRule::ProcessExecDynamic => (25, "ast:process-exec-dynamic"),
+            AstRule::DynamicRequire => (10, "ast:dynamic-require"),
+            AstRule::ProcessExec => (5, "ast:process-exec"),
+            AstRule::NetworkCall => (5, "ast:network-call"),
+        };
+        // Cap each rule's contribution: even 50 dynamic require calls
+        // aren't 50x as bad as one. Take max severity, score once.
+        if !rules.contains(&label) {
+            score += delta;
+            rules.push(label);
+        }
+    }
+    (score, rules)
+}
+
+/// Promote the regex severity if AST findings warrant it. AST can only
+/// raise severity, never lower it: a clean AST doesn't excuse a script
+/// the regex flagged as Critical.
+fn merge_severity(regex_sev: FindingSeverity, ast_findings: &[postinstall_ast::AstFinding]) -> FindingSeverity {
+    let ast_sev = ast_findings
+        .iter()
+        .map(|f| f.severity)
+        .max_by_key(|s| match s {
+            AstSeverity::Critical => 4,
+            AstSeverity::High => 3,
+            AstSeverity::Medium => 2,
+            AstSeverity::Low => 1,
+            AstSeverity::Info => 0,
+        });
+    let ast_as_finding = match ast_sev {
+        Some(AstSeverity::Critical) => FindingSeverity::Critical,
+        Some(AstSeverity::High) => FindingSeverity::High,
+        Some(AstSeverity::Medium) => FindingSeverity::Medium,
+        Some(AstSeverity::Low) => FindingSeverity::Low,
+        _ => FindingSeverity::Unknown,
+    };
+    [regex_sev, ast_as_finding]
+        .into_iter()
+        .max_by_key(|s| match s {
+            FindingSeverity::Critical => 5,
+            FindingSeverity::High => 4,
+            FindingSeverity::Medium => 3,
+            FindingSeverity::Low => 2,
+            FindingSeverity::Info => 1,
+            FindingSeverity::Unknown => 0,
+        })
+        .unwrap_or(regex_sev)
 }
 
 // ── Heuristic detector ──────────────────────────────────────────────────────

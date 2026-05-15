@@ -24,6 +24,10 @@ futures.workspace = true
 regex.workspace = true
 base64.workspace = true
 sigstore.workspace = true
+swc_ecma_parser.workspace = true
+swc_ecma_ast.workspace = true
+swc_common.workspace = true
+swc_ecma_visit.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]

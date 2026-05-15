@@ -14,7 +14,7 @@
 | ------------------------------------- | ------------------------------------------------------------------------------------------ |
 | Audit existing lockfile               | Works. npm/pnpm/yarn lockfiles parsed, four evaluators run in parallel.                    |
 | OSV.dev advisory matching             | Works. Batch endpoint, SQLite cache, semver range matching, per-major fix selection.       |
-| Postinstall script heuristic          | Works as a string-match heuristic, not AST analysis. ~10 rules, scored 0-100.              |
+| Postinstall script heuristic          | String-match heuristic (~10 regex rules) on the shell command, plus **AST-based static analysis** of any referenced JS file (`node X.js` pattern). AST rules cover process spawn calls, credential-path file reads, dynamic code execution, base64-decode→eval chains, dynamic require/import, network calls. AST results promote the regex severity (never demote). |
 | npm registry risk scoring             | Works. Maintainer count, version count, fresh-publish, abandonment, typosquat detection.   |
 | Sigstore provenance                   | Presence + identity + **full crypto verification** (Fulcio cert chain, DSSE signature, SCT). Falls back to presence + identity when the trust root cannot be initialised (offline). Rekor inclusion proof check is not yet implemented (TODO upstream in `sigstore-rs`). |
 | Pre-install gate (`npm ci`)           | Works when invoked through the shim AND lockfile is up-to-date.                            |
@@ -170,7 +170,7 @@ guardep does **not** currently defend against:
 ## Known limitations and roadmap
 
 - [ ] **True pre-install resolution.** Use `npm install --dry-run --json` to audit the *intended* graph instead of the existing lockfile. Eliminates the "new package bypasses audit" gap.
-- [ ] **AST-based postinstall analysis.** Replace regex heuristic with `swc_ecma_parser`. Real comment / string-literal awareness.
+- [x] **AST-based postinstall analysis** of referenced JS files via `swc_ecma_parser`. Distinguishes literal-arg process-spawn calls from dynamic ones. Cross-file dataflow analysis is still future work.
 - [x] **Sigstore crypto verification.** Fulcio cert chain, DSSE signature, SCT, Identity policy bound to GitHub Actions OIDC issuer.
 - [ ] **Rekor inclusion proof.** Implementation merged upstream in [sigstore-rs#543](https://github.com/sigstore/sigstore-rs/pull/543) (Jan 2026) but not yet released to crates.io. We're pinned to `sigstore = "0.13"` (the latest release) which still skips the proof. Will bump to 0.14 (or whatever ships the merge) and flip `offline=false` once it's published.
 - [x] **Maven resolver** (`mvn dependency:tree -DoutputType=tgf`) with Apache version-order comparator

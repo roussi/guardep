@@ -35,3 +35,7 @@ base64 = "0.22"
 tempfile = "3"
 wiremock = "0.6"
 sigstore = { version = "0.13", default-features = false, features = ["bundle", "sigstore-trust-root", "rustls-tls"] }
+swc_ecma_parser = "39"
+swc_ecma_ast = "23"
+swc_common = "21"
+swc_ecma_visit = "23"

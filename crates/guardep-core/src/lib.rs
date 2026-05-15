@@ -9,6 +9,7 @@ pub mod osv;
 pub mod osv_evaluator;
 pub mod policy;
 pub mod postinstall;
+pub mod postinstall_ast;
 pub mod provenance;
 pub mod range;
 pub mod report_data;
