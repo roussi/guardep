@@ -8,6 +8,12 @@ edition = "2021"
 license = "MIT"
 authors = ["Abdelghani Roussi"]
 repository = "https://github.com/aroussi/guardep"
+homepage = "https://github.com/aroussi/guardep"
+documentation = "https://github.com/aroussi/guardep/blob/main/DOCUMENTATION.md"
+readme = "README.md"
+keywords = ["security", "supply-chain", "npm", "audit", "sbom"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.81"
 
 [workspace.dependencies]
 anyhow = "1"

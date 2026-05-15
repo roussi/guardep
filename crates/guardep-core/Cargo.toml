@@ -1,8 +1,16 @@
 [package]
 name = "guardep-core"
+description = "Core library for guardep: finding model, evaluator trait, OSV/EPSS/KEV/OSSF/intel/source-scan/license/provenance evaluators, lockfile resolvers."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [lints]
 workspace = true
