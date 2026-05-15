@@ -17,3 +17,7 @@ semver.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 directories.workspace = true
+async-trait.workspace = true
+sha2.workspace = true
+hex.workspace = true
+futures.workspace = true
