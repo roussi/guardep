@@ -11,12 +11,10 @@ use crate::finding::{Evaluator, Finding, FindingKind, FindingSeverity};
 use crate::policy::Policy;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Utc};
-use rusqlite::{params, Connection};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 /// Top ~200 npm packages by weekly downloads. Used as the typosquat
 /// reference set: a package whose Levenshtein distance to one of these
@@ -132,14 +130,6 @@ fn is_legit_relative(name: &str, top: &str) -> bool {
 
 const DEFAULT_BASE_URL: &str = "https://registry.npmjs.org";
 
-const SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS intel_cache (
-    package TEXT PRIMARY KEY,
-    fetched_at INTEGER NOT NULL,
-    payload TEXT NOT NULL
-);
-"#;
-
 /// Reduced metadata snapshot — what we cache and score on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct IntelSnapshot {
@@ -188,59 +178,24 @@ impl IntelEvaluator {
         })
     }
 
-    fn intel_db_path(&self) -> PathBuf {
-        self.cache_path.with_file_name("intel.db")
+    fn open_cache(&self, ttl_hours: u64) -> Result<crate::cache::KvCache> {
+        crate::cache::KvCache::open(&self.cache_path, ttl_hours)
     }
 
-    fn open_cache(&self) -> Result<Mutex<Connection>> {
-        let path = self.intel_db_path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let conn = Connection::open(&path).context("open intel cache db")?;
-        conn.execute_batch(SCHEMA)?;
-        Ok(Mutex::new(conn))
-    }
-
-    fn cache_get(
-        conn: &Mutex<Connection>,
-        package: &str,
-        ttl_hours: i64,
-    ) -> Result<Option<IntelSnapshot>> {
-        let conn = conn.lock().expect("intel cache mutex poisoned");
-        let mut stmt = conn
-            .prepare("SELECT fetched_at, payload FROM intel_cache WHERE package = ?1")?;
-        let row = stmt
-            .query_row(params![package], |r| {
-                let ts: i64 = r.get(0)?;
-                let payload: String = r.get(1)?;
-                Ok((ts, payload))
-            })
-            .ok();
-
-        let Some((ts, payload)) = row else {
+    fn cache_get(cache: &crate::cache::KvCache, package: &str) -> Result<Option<IntelSnapshot>> {
+        let Some(payload) = cache.get("intel", package)? else {
             return Ok(None);
         };
-        let cutoff = (Utc::now() - Duration::hours(ttl_hours)).timestamp();
-        if ts < cutoff {
-            return Ok(None);
-        }
-        let snap: IntelSnapshot = serde_json::from_str(&payload)?;
-        Ok(Some(snap))
+        Ok(Some(serde_json::from_str(&payload)?))
     }
 
     fn cache_put(
-        conn: &Mutex<Connection>,
+        cache: &crate::cache::KvCache,
         package: &str,
         snap: &IntelSnapshot,
     ) -> Result<()> {
         let payload = serde_json::to_string(snap)?;
-        let conn = conn.lock().expect("intel cache mutex poisoned");
-        conn.execute(
-            "INSERT OR REPLACE INTO intel_cache (package, fetched_at, payload) VALUES (?1, ?2, ?3)",
-            params![package, Utc::now().timestamp(), payload],
-        )?;
-        Ok(())
+        cache.put("intel", package, &payload)
     }
 
     async fn fetch(&self, name: &str) -> Result<IntelSnapshot> {
@@ -307,8 +262,7 @@ impl Evaluator for IntelEvaluator {
         use futures::stream::{self, StreamExt};
         const FETCH_CONCURRENCY: usize = 32;
 
-        let cache = self.open_cache()?;
-        let ttl = policy.cache_refresh_hours as i64;
+        let cache = self.open_cache(policy.cache_refresh_hours)?;
 
         // Phase 1: cache lookup — sequential, hits SQLite (fast).
         let mut hits: Vec<(PackageRef, IntelSnapshot)> = Vec::new();
@@ -317,7 +271,7 @@ impl Evaluator for IntelEvaluator {
             if pkg.ecosystem != Ecosystem::Npm {
                 continue;
             }
-            match Self::cache_get(&cache, &pkg.name, ttl) {
+            match Self::cache_get(&cache, &pkg.name) {
                 Ok(Some(snap)) => hits.push((pkg.clone(), snap)),
                 Ok(None) => misses.push(pkg.clone()),
                 Err(e) => tracing::warn!("intel cache read failed for {}: {e}", pkg.name),
@@ -702,6 +656,7 @@ pub(crate) fn looks_legitimately_popular(snap: &IntelSnapshot) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

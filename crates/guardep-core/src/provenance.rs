@@ -17,34 +17,28 @@
 //! generate any attestation, and forging a matching repository claim
 //! requires owning the GitHub Actions identity.
 
+use crate::cache::KvCache;
 use crate::ecosystem::{Ecosystem, PackageRef};
 use crate::finding::{Evaluator, Finding, FindingKind, FindingSeverity};
 use crate::policy::Policy;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::Engine;
-use chrono::{Duration, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 const DEFAULT_BASE_URL: &str = "https://registry.npmjs.org";
 
-const SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS provenance_cache (
-    name TEXT NOT NULL,
-    version TEXT NOT NULL,
-    fetched_at INTEGER NOT NULL,
-    attested_repo TEXT,
-    expected_repo TEXT,
-    PRIMARY KEY (name, version)
-);
-"#;
+#[derive(Serialize, Deserialize)]
+struct CachedProv {
+    attested_repo: Option<String>,
+    expected_repo: Option<String>,
+}
 
 /// Evaluator that enforces Sigstore provenance presence and source-repo
 /// identity for npm packages flagged by `policy.require_provenance`.
 pub struct ProvenanceEvaluator {
-    db: Mutex<Connection>,
+    cache_path: PathBuf,
     http: reqwest::Client,
     base_url: String,
 }
@@ -55,13 +49,6 @@ impl ProvenanceEvaluator {
     }
 
     pub fn with_base_url(cache_path: PathBuf, base_url: String) -> Result<Self> {
-        let db_path = cache_path.with_file_name("provenance.db");
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let conn = Connection::open(&db_path).context("open provenance cache db")?;
-        conn.execute_batch(SCHEMA)?;
-
         let http = reqwest::Client::builder()
             .user_agent(concat!("guardep/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(30))
@@ -69,58 +56,41 @@ impl ProvenanceEvaluator {
             .context("build reqwest client")?;
 
         Ok(Self {
-            db: Mutex::new(conn),
+            cache_path,
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
         })
     }
 
-    /// Check the SQLite cache for a fresh entry. Returns `Some(entry)` if
-    /// the row exists and is within the TTL.
-    fn cache_get(&self, name: &str, version: &str, ttl_hours: u64) -> Result<Option<CacheEntry>> {
-        let conn = self.db.lock().expect("provenance cache mutex poisoned");
-        let row = conn
-            .query_row(
-                "SELECT fetched_at, attested_repo, expected_repo
-                 FROM provenance_cache WHERE name = ?1 AND version = ?2",
-                params![name, version],
-                |r| {
-                    let ts: i64 = r.get(0)?;
-                    let attested: Option<String> = r.get(1)?;
-                    let expected: Option<String> = r.get(2)?;
-                    Ok((ts, attested, expected))
-                },
-            )
-            .optional()?;
+    fn open_cache(&self, ttl_hours: u64) -> Result<KvCache> {
+        KvCache::open(&self.cache_path, ttl_hours)
+    }
 
-        let Some((ts, attested, expected)) = row else {
+    fn cache_get(cache: &KvCache, name: &str, version: &str) -> Result<Option<CacheEntry>> {
+        let key = format!("{name}@{version}");
+        let Some(payload) = cache.get("provenance", &key)? else {
             return Ok(None);
         };
-        let cutoff = (Utc::now() - Duration::hours(ttl_hours as i64)).timestamp();
-        if ts < cutoff {
-            return Ok(None);
-        }
+        let cached: CachedProv = serde_json::from_str(&payload)?;
         Ok(Some(CacheEntry {
-            attested_repo: attested,
-            expected_repo: expected,
+            attested_repo: cached.attested_repo,
+            expected_repo: cached.expected_repo,
         }))
     }
 
     fn cache_put(
-        &self,
+        cache: &KvCache,
         name: &str,
         version: &str,
         attested: Option<&str>,
         expected: Option<&str>,
     ) -> Result<()> {
-        let conn = self.db.lock().expect("provenance cache mutex poisoned");
-        conn.execute(
-            "INSERT OR REPLACE INTO provenance_cache
-             (name, version, fetched_at, attested_repo, expected_repo)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![name, version, Utc::now().timestamp(), attested, expected],
-        )?;
-        Ok(())
+        let key = format!("{name}@{version}");
+        let payload = serde_json::to_string(&CachedProv {
+            attested_repo: attested.map(String::from),
+            expected_repo: expected.map(String::from),
+        })?;
+        cache.put("provenance", &key, &payload)
     }
 
     /// Fetch the attestation envelope from npm. Returns `Ok(None)` when
@@ -239,7 +209,7 @@ impl Evaluator for ProvenanceEvaluator {
         use futures::stream::{self, StreamExt};
         const FETCH_CONCURRENCY: usize = 16;
 
-        let ttl = policy.cache_refresh_hours;
+        let cache = self.open_cache(policy.cache_refresh_hours)?;
 
         // Filter to packages that match policy + npm ecosystem.
         let targets: Vec<&PackageRef> = packages
@@ -253,7 +223,7 @@ impl Evaluator for ProvenanceEvaluator {
         let mut from_cache: Vec<(PackageRef, Option<String>, Option<String>)> = Vec::new();
         let mut to_fetch: Vec<PackageRef> = Vec::new();
         for pkg in &targets {
-            match self.cache_get(&pkg.name, &pkg.version, ttl)? {
+            match Self::cache_get(&cache, &pkg.name, &pkg.version)? {
                 Some(entry) => from_cache.push((
                     (*pkg).clone(),
                     entry.attested_repo,
@@ -303,7 +273,13 @@ impl Evaluator for ProvenanceEvaluator {
 
         // Phase 3: persist fetched results to cache.
         for (pkg, attested, expected) in &fetched {
-            let _ = self.cache_put(&pkg.name, &pkg.version, attested.as_deref(), expected.as_deref());
+            let _ = Self::cache_put(
+                &cache,
+                &pkg.name,
+                &pkg.version,
+                attested.as_deref(),
+                expected.as_deref(),
+            );
         }
 
         // Phase 4: emit findings from both cache hits and fresh fetches.
