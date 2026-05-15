@@ -4,9 +4,12 @@ pub mod ecosystem;
 pub mod evaluator;
 pub mod finding;
 pub mod matcher;
+pub mod intel;
 pub mod osv;
 pub mod osv_evaluator;
 pub mod policy;
+pub mod postinstall;
+pub mod provenance;
 pub mod resolver;
 
 pub use advisory::{Advisory, Severity, ThreatClass};
