@@ -95,6 +95,9 @@ enum Cmd {
         /// Actually run the install commands instead of just printing them.
         #[arg(long)]
         apply: bool,
+        /// Skip the confirmation prompt before `--apply`. Use in CI.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Install symlinks (npm/mvn/gradle) into ~/.guardep/bin.
     InstallShims {
@@ -131,8 +134,8 @@ async fn main() -> Result<()> {
         Cmd::Audit { path, format, collapse, info, fail_on } => {
             commands::audit::run(&path, format.into(), collapse, info, fail_on.into()).await
         }
-        Cmd::Fix { path, target, apply } => {
-            commands::fix::run(&path, target.into(), apply).await
+        Cmd::Fix { path, target, apply, yes } => {
+            commands::fix::run(&path, target.into(), apply, yes).await
         }
         Cmd::InstallShims { force } => commands::install_shims::run(force),
         Cmd::Shim { tool, args } => shim::run(&tool, &args).await,

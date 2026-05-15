@@ -73,7 +73,7 @@ impl PackageManager {
     }
 }
 
-pub async fn run(path: &Path, target: FixTarget, apply: bool) -> Result<()> {
+pub async fn run(path: &Path, target: FixTarget, apply: bool, yes: bool) -> Result<()> {
     let report = audit::evaluate_project(path, false).await?;
     let plan = build_plan(&report, target);
     print_plan(&plan, target);
@@ -84,7 +84,18 @@ pub async fn run(path: &Path, target: FixTarget, apply: bool) -> Result<()> {
             return Ok(());
         }
         let pm = PackageManager::detect(path);
-        eprintln!("\n{} applying {} upgrade(s) via {:?}", ">".cyan(), plan.upgrades.len(), pm);
+        // Confirmation: --apply without --yes asks before mutating
+        // package.json + lockfile. CI users opt out via --yes.
+        if !yes && !confirm(plan.upgrades.len(), pm)? {
+            eprintln!("{} aborted by user.", "i".cyan());
+            return Ok(());
+        }
+        eprintln!(
+            "\n{} applying {} upgrade(s) via {:?}",
+            ">".cyan(),
+            plan.upgrades.len(),
+            pm
+        );
         for upg in &plan.upgrades {
             let cmd = pm.install_cmd(&upg.name, &upg.target_version);
             run_command(path, &cmd)?;
@@ -97,6 +108,22 @@ pub async fn run(path: &Path, target: FixTarget, apply: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn confirm(upgrade_count: usize, pm: PackageManager) -> Result<bool> {
+    use std::io::{self, BufRead, Write};
+    eprint!(
+        "\n{} apply {} upgrade(s) via {:?}? This will modify package.json + lockfile. [y/N] ",
+        "?".yellow().bold(),
+        upgrade_count,
+        pm
+    );
+    io::stderr().flush().ok();
+    let mut line = String::new();
+    let stdin = io::stdin();
+    stdin.lock().read_line(&mut line)?;
+    let answer = line.trim().to_ascii_lowercase();
+    Ok(matches!(answer.as_str(), "y" | "yes"))
 }
 
 #[derive(Debug)]

@@ -420,6 +420,22 @@ struct JsonGroup<'a> {
     fix_safe: Option<String>,
     cross_major_fallback: Option<String>,
     breaking: bool,
+    /// Per-finding details — kind, severity, references, evaluator
+    /// `details` payload. Lets CI consumers introspect a group without
+    /// re-running with `--format json` minus `--collapse`.
+    findings: Vec<JsonGroupFinding<'a>>,
+}
+
+#[derive(Serialize)]
+struct JsonGroupFinding<'a> {
+    finding_id: &'a str,
+    kind: &'static str,
+    severity: String,
+    action: String,
+    summary: &'a str,
+    fix: Option<&'a str>,
+    references: &'a [String],
+    details: &'a serde_json::Value,
 }
 
 pub fn print_json(report: &FindingsReport, collapse: bool) -> Result<()> {
@@ -435,6 +451,19 @@ pub fn print_json(report: &FindingsReport, collapse: bool) -> Result<()> {
                 let class = worst_class(&items);
                 let severity = max_severity(&items);
                 let targets = fix_targets(&items);
+                let per_finding: Vec<JsonGroupFinding> = items
+                    .iter()
+                    .map(|s| JsonGroupFinding {
+                        finding_id: s.finding.id.as_str(),
+                        kind: s.finding.kind.as_str(),
+                        severity: format!("{:?}", s.finding.severity).to_lowercase(),
+                        action: format!("{:?}", s.action).to_lowercase(),
+                        summary: s.finding.summary.as_str(),
+                        fix: s.finding.fixed_versions.first().map(String::as_str),
+                        references: &s.finding.references,
+                        details: &s.finding.details,
+                    })
+                    .collect();
                 JsonGroup {
                     package: name.to_string(),
                     version: version.to_string(),
@@ -451,6 +480,7 @@ pub fn print_json(report: &FindingsReport, collapse: bool) -> Result<()> {
                     fix_safe: targets.safe,
                     cross_major_fallback: targets.cross_major_fallback,
                     breaking: targets.breaking,
+                    findings: per_finding,
                 }
             })
             .collect();
