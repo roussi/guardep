@@ -4,3 +4,11 @@ Cargo.lock.bak
 .DS_Store
 .idea/
 .vscode/
+
+# Per-user Claude Code state. The committed `.claude/` directory holds
+# project conventions, hooks, slash commands, and the skill — those are
+# tracked. Anything under `local/` and per-user settings overrides
+# stay out.
+.claude/local/
+.claude/settings.local.json
+.claude/.last_session
