@@ -3,6 +3,7 @@ pub mod cache;
 pub mod ecosystem;
 pub mod evaluator;
 pub mod finding;
+pub mod finding_adapter;
 pub mod matcher;
 pub mod intel;
 pub mod osv;

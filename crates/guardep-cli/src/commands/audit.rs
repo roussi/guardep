@@ -1,14 +1,18 @@
 use anyhow::Result;
 use guardep_core::{
-    cache::Cache,
-    matcher::{evaluate, Verdict},
-    osv::OsvClient,
+    evaluator::EvaluatorRegistry,
+    finding_adapter::findings_to_verdict,
+    intel::IntelEvaluator,
+    matcher::Verdict,
+    osv_evaluator::OsvEvaluator,
     policy::Policy,
+    postinstall::PostinstallEvaluator,
+    provenance::ProvenanceEvaluator,
     resolver::{NpmLockResolver, Resolver},
-    Advisory, PackageRef,
 };
 use owo_colors::OwoColorize;
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -31,50 +35,31 @@ pub async fn run(path: &Path, format: Format, collapse: bool) -> Result<()> {
 pub async fn evaluate_project(path: &Path) -> Result<Verdict> {
     let policy = Policy::load(&path.join("guardep.toml"))?;
     let packages = NpmLockResolver.resolve(path)?;
-    eprintln!("{} resolved {} packages", "→".cyan(), packages.len());
+    eprintln!("{} resolved {} packages", ">".cyan(), packages.len());
 
     let dirs = directories::ProjectDirs::from("dev", "guardep", "guardep")
         .ok_or_else(|| anyhow::anyhow!("could not determine cache dir"))?;
-    let cache = Cache::open(&dirs.cache_dir().join("advisories.db"), policy.cache_refresh_hours)?;
-    let client = OsvClient::new()?;
+    let cache_dir = dirs.cache_dir().to_path_buf();
+    std::fs::create_dir_all(&cache_dir).ok();
 
-    // Phase 1: cache lookup
-    let mut all: Vec<Advisory> = Vec::new();
-    let mut to_fetch: Vec<PackageRef> = Vec::new();
-    for pkg in &packages {
-        match cache.get(pkg)? {
-            Some(hit) => all.extend(hit),
-            None => to_fetch.push(pkg.clone()),
-        }
-    }
+    let mut registry = EvaluatorRegistry::new();
+    registry.register(Arc::new(OsvEvaluator::new(
+        cache_dir.join("advisories.db"),
+    )?));
+    registry.register(Arc::new(PostinstallEvaluator::new(path.to_path_buf())));
+    registry.register(Arc::new(IntelEvaluator::new(
+        cache_dir.join("intel.db"),
+    )?));
+    registry.register(Arc::new(ProvenanceEvaluator::new(
+        cache_dir.join("provenance.db"),
+    )?));
 
-    // Phase 2: batch-fetch misses
-    if !to_fetch.is_empty() {
-        eprintln!(
-            "{} fetching {} uncached package(s) from OSV (batched)",
-            "→".cyan(),
-            to_fetch.len()
-        );
-        match client.query_batch(&to_fetch).await {
-            Ok(batched) => {
-                for (pkg, advs) in to_fetch.iter().zip(batched.iter()) {
-                    let _ = cache.put(pkg, advs);
-                    all.extend(advs.clone());
-                }
-            }
-            Err(e) => {
-                eprintln!("{} batch query failed: {e} — falling back to per-package", "!".yellow());
-                for pkg in &to_fetch {
-                    let fetched = client.query(pkg).await.unwrap_or_else(|err| {
-                        tracing::warn!("OSV query failed for {pkg}: {err}");
-                        Vec::new()
-                    });
-                    let _ = cache.put(pkg, &fetched);
-                    all.extend(fetched);
-                }
-            }
-        }
-    }
+    eprintln!(
+        "{} running evaluators: {}",
+        ">".cyan(),
+        registry.names().join(", ")
+    );
 
-    Ok(evaluate(&packages, &all, &policy))
+    let findings = registry.run(&packages, &policy).await?;
+    Ok(findings_to_verdict(findings, &policy))
 }
