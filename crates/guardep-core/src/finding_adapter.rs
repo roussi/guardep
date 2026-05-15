@@ -21,7 +21,7 @@ pub fn findings_to_verdict(findings: Vec<Finding>, policy: &Policy) -> Verdict {
         .into_iter()
         .map(|f| {
             let action = decide_action(policy, &f);
-            let class = legacy_class_for_kind(f.kind);
+            let class = legacy_class_for_kind(f.kind, f.severity);
             let severity = legacy_severity(f.severity);
             let pkg = f.package.clone();
             let advisory = Advisory {
@@ -48,16 +48,29 @@ pub fn findings_to_verdict(findings: Vec<Finding>, policy: &Policy) -> Verdict {
     Verdict { matches }
 }
 
-fn legacy_class_for_kind(kind: FindingKind) -> ThreatClass {
+/// Map (kind, severity) onto the legacy `ThreatClass` the renderer uses
+/// for the red MALWARE column vs the yellow CVE column.
+///
+/// Heuristic-only kinds (PostinstallScript, RiskScore) only render as
+/// MALWARE when the heuristic itself reports `Critical`. A low-severity
+/// postinstall (e.g. score-0 `node install.js`) renders as CVE so it
+/// doesn't masquerade as a confirmed compromise.
+fn legacy_class_for_kind(kind: FindingKind, severity: FindingSeverity) -> ThreatClass {
     match kind {
-        // Malware-tier findings render with the red MALWARE label
-        FindingKind::Malware
-        | FindingKind::PostinstallScript
-        | FindingKind::ProvenanceMismatch => ThreatClass::Malware,
-        // CVE-tier
-        FindingKind::Vulnerability
-        | FindingKind::RiskScore
-        | FindingKind::MissingProvenance => ThreatClass::Vulnerability,
+        // Confirmed malware records (MAL-* IDs, OSV-classified) always MALWARE
+        FindingKind::Malware => ThreatClass::Malware,
+        // Provenance mismatch is a strong signal — usually means hijack
+        FindingKind::ProvenanceMismatch => ThreatClass::Malware,
+        // Heuristic kinds: only MALWARE when the heuristic itself screamed
+        FindingKind::PostinstallScript | FindingKind::RiskScore => {
+            if severity == FindingSeverity::Critical {
+                ThreatClass::Malware
+            } else {
+                ThreatClass::Vulnerability
+            }
+        }
+        // Plain CVEs and missing provenance render as CVE
+        FindingKind::Vulnerability | FindingKind::MissingProvenance => ThreatClass::Vulnerability,
     }
 }
 
@@ -100,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn postinstall_renders_as_malware_class() {
+    fn postinstall_critical_renders_as_malware_class() {
         let f = Finding {
             package: pkg(),
             kind: FindingKind::PostinstallScript,
@@ -114,6 +127,28 @@ mod tests {
         };
         let v = findings_to_verdict(vec![f], &Policy::default());
         assert_eq!(v.matches[0].advisory.class, ThreatClass::Malware);
+    }
+
+    /// A score-0 postinstall (e.g. `node install.js`) must NOT render
+    /// as MALWARE — that masquerades as a confirmed compromise.
+    #[test]
+    fn postinstall_low_renders_as_cve_class() {
+        let mut policy = Policy::default();
+        policy.postinstall_default = Action::Warn; // force the finding through
+        let f = Finding {
+            package: pkg(),
+            kind: FindingKind::PostinstallScript,
+            id: "script:postinstall:def".into(),
+            aliases: vec![],
+            summary: "node install.js".into(),
+            severity: FindingSeverity::Low,
+            fixed_versions: vec![],
+            references: vec![],
+            details: serde_json::Value::Null,
+        };
+        let v = findings_to_verdict(vec![f], &policy);
+        assert_eq!(v.matches.len(), 1);
+        assert_eq!(v.matches[0].advisory.class, ThreatClass::Vulnerability);
     }
 
     #[test]

@@ -38,9 +38,11 @@ pub struct Policy {
 
     // ── Postinstall script policy (Phase 1A) ─────────────────────────────
     /// How to react when a package ships a postinstall/install/preinstall
-    /// script. `block` = refuse install. `review` = require explicit
-    /// allow via script hash. `warn` = surface but proceed. `allow` = silent.
-    #[serde(default = "default_review")]
+    /// script that scored 0 on the heuristic detector (no suspicious
+    /// patterns matched). Default is `allow` — most install scripts
+    /// (`node install.js`, `node-gyp rebuild`) are benign and surfacing
+    /// every one creates noise. Set to `warn` to audit every script.
+    #[serde(default = "default_allow")]
     pub postinstall_default: Action,
     /// Action when heuristic detector flags a script as suspicious
     /// (network calls + cred fs reads, base64+eval, etc.)
@@ -107,9 +109,6 @@ fn default_warn() -> Action {
 fn default_allow() -> Action {
     Action::Allow
 }
-fn default_review() -> Action {
-    Action::Warn
-}
 fn default_refresh() -> u64 {
     6
 }
@@ -129,6 +128,38 @@ fn default_true() -> bool {
     true
 }
 
+/// Pre-approved SHA-256 hashes of common, well-known benign install
+/// scripts. Suppresses noise from packages that legitimately ship
+/// `node install.js`, `node-gyp rebuild`, etc. Users can extend this
+/// list via `policy.allowed_script_hashes` in `guardep.toml`.
+fn default_allowed_script_hashes() -> HashSet<String> {
+    [
+        // "node install.js" — electron, esbuild, many native bindings
+        "912d4d8f507b7b392ae422a459f98da94669a742e4cc43cfe061e630ee2846fe",
+        // "node ./install.js"
+        "ffcd30ee02ebe94ed91aaad2947b2a122838d0715e725833711b409c70c79605",
+        // "node ./scripts/install.js"
+        "e8d389f3116b70488031adf8aba2d570bfcad5ae8e67d8ccc74199f0b4cb6733",
+        // "node-gyp rebuild" — universal native module build
+        "55941a60816361a50d221482fed3b3842464f10af4371a667af4268d13b953a2",
+        // "prebuild-install || node-gyp rebuild"
+        "582bbd5982901bafc7a72276d195e371d76dc1d1dd5d3e425682444c4feaa8aa",
+        // "prebuild-install"
+        "1b461934a7812831db18e5b164fc30d04975b4f5cc06b28329048364ed56b4d1",
+        // "node-gyp configure && node-gyp build"
+        "7bb94ff9a61d8ca73928728f2386f0f418841064b87b07e7fef5585482d30fab",
+        // "npm run build"
+        "16c0e4305ac213dff39fc82b69b6e08aeeb8758e33cd72d7c409752a70e9f054",
+        // "node dist/index.js --exec install" — cypress
+        "d4951105d74d2e8a684c155c9ef75e2916c3a6ee3ce58f8d11db131011f882c4",
+        // "node ./script/select-7z-arch.js" — electron-winstaller
+        "06ad330351c94e886bde150af9e3b834cc509db3be24a650749871087f2d7518",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 impl Default for Policy {
     fn default() -> Self {
         Self {
@@ -137,10 +168,10 @@ impl Default for Policy {
             high_cve: Action::Warn,
             medium_cve: Action::Allow,
             low_cve: Action::Allow,
-            postinstall_default: Action::Warn,
+            postinstall_default: Action::Allow,
             postinstall_suspicious: Action::Block,
             postinstall_critical: Action::Block,
-            allowed_script_hashes: HashSet::new(),
+            allowed_script_hashes: default_allowed_script_hashes(),
             block_if_risk_score_above: 85,
             warn_if_risk_score_above: 60,
             warn_if_unmaintained_days: 730,
@@ -321,9 +352,13 @@ mod tests {
             p.decide_finding(FindingKind::PostinstallScript, FindingSeverity::Medium),
             Action::Block // mapped to "suspicious" tier
         );
+        // Score-0 / Low postinstall now defaults to Allow — most npm
+        // install scripts are benign (`node install.js`, `node-gyp
+        // rebuild`). Users opt into auditing them by setting
+        // `postinstall_default = "warn"` in guardep.toml.
         assert_eq!(
             p.decide_finding(FindingKind::PostinstallScript, FindingSeverity::Low),
-            Action::Warn // mapped to "default" tier
+            Action::Allow
         );
     }
 }

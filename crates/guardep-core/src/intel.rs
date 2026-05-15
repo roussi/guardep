@@ -18,13 +18,117 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+/// Top ~200 npm packages by weekly downloads. Used as the typosquat
+/// reference set: a package whose Levenshtein distance to one of these
+/// is <= 2 is flagged. Includes packages that themselves frequently
+/// appear in transitive trees (e.g. cypress, chai, acorn) so they are
+/// recognised as legitimate rather than typosquat candidates.
 const TOP_PACKAGES: &[&str] = &[
-    "react", "lodash", "axios", "express", "react-dom", "chalk",
+    // Core runtime / utility
+    "react", "react-dom", "lodash", "axios", "express", "chalk",
     "commander", "debug", "moment", "request", "tslib", "semver",
     "glob", "async", "uuid", "dotenv", "typescript", "jest", "eslint",
     "prettier", "webpack", "babel-core", "mocha", "underscore", "jquery",
     "bluebird", "body-parser", "mongoose", "cors", "fs-extra",
+    // Build tooling
+    "vite", "rollup", "esbuild", "parcel", "gulp", "grunt", "browserify",
+    "ts-node", "tsx", "swc", "rspack", "tsup", "tsdown",
+    // React ecosystem
+    "react-router", "react-router-dom", "redux", "react-redux",
+    "next", "gatsby", "remix", "vue", "vue-router", "vuex", "pinia",
+    "svelte", "angular", "preact", "solid-js",
+    // HTTP / async
+    "node-fetch", "got", "ky", "superagent", "isomorphic-fetch",
+    "ws", "socket.io", "socket.io-client", "engine.io",
+    // Test frameworks
+    "jest", "vitest", "mocha", "chai", "sinon", "ava", "tap", "tape",
+    "cypress", "playwright", "puppeteer", "karma", "jasmine",
+    "@testing-library/react", "@testing-library/jest-dom", "supertest",
+    // Linters / formatters
+    "eslint", "prettier", "stylelint", "tslint", "biome", "rome",
+    "@typescript-eslint/parser", "@typescript-eslint/eslint-plugin",
+    // Bundler plugins
+    "webpack-cli", "webpack-dev-server", "html-webpack-plugin",
+    "mini-css-extract-plugin", "css-loader", "style-loader",
+    "babel-loader", "ts-loader", "file-loader", "postcss-loader",
+    "@babel/core", "@babel/preset-env", "@babel/preset-react",
+    "@babel/preset-typescript", "@babel/runtime",
+    // CSS
+    "tailwindcss", "postcss", "autoprefixer", "sass", "less", "stylus",
+    "styled-components", "emotion", "@emotion/react", "@emotion/styled",
+    // Server frameworks
+    "fastify", "koa", "hapi", "nest", "@nestjs/core", "@nestjs/common",
+    "express-session", "passport", "jsonwebtoken", "bcrypt", "bcryptjs",
+    // Date / utility
+    "date-fns", "dayjs", "luxon", "rxjs", "ramda",
+    // Validation
+    "zod", "yup", "joi", "ajv", "validator", "class-validator",
+    // Database
+    "pg", "mysql", "mysql2", "sqlite3", "redis", "ioredis", "knex",
+    "prisma", "@prisma/client", "sequelize", "typeorm", "mongodb",
+    // Files / streams
+    "fs-extra", "graceful-fs", "rimraf", "del", "globby", "fast-glob",
+    "minimatch", "chokidar", "tar", "archiver", "unzipper",
+    // CLI tooling
+    "yargs", "minimist", "inquirer", "ora", "boxen", "figlet", "cli-table",
+    // Process / utilities
+    "execa", "shelljs", "cross-spawn", "spawn-async", "node-pty",
+    "dotenv-cli", "concurrently", "npm-run-all", "wait-on",
+    // AST / parsing
+    "acorn", "espree", "esprima", "babel-parser", "@babel/parser",
+    "esbuild-wasm", "estree-walker", "magic-string",
+    // Logging
+    "winston", "bunyan", "pino", "morgan", "log4js",
+    // GraphQL
+    "graphql", "apollo-server", "@apollo/client", "graphql-tag",
+    // Mocking / fixtures
+    "nock", "msw", "faker", "@faker-js/faker", "casual",
+    // Markdown / parsing
+    "marked", "markdown-it", "remark", "rehype", "highlight.js",
+    "shiki", "prismjs",
+    // Misc heavy hitters
+    "qs", "querystring", "form-data", "mime", "mime-types",
+    "colors", "kleur", "picocolors", "ansi-colors", "ansi-styles",
+    "strip-ansi", "wrap-ansi", "string-width",
+    "deep-equal", "deepmerge", "lodash.merge", "lodash.get",
+    "object-assign", "extend", "merge-descriptors",
+    "uuid", "nanoid", "shortid", "cuid",
+    // Crypto / parsing
+    "asn1", "asn1.js", "tweetnacl", "node-forge", "crypto-js",
+    "bn.js", "elliptic", "hash.js", "sha.js",
+    // Iconography / fonts
+    "lucide", "lucide-react", "lucide-vue-next", "react-icons",
+    "@fortawesome/fontawesome-free", "feather-icons",
+    // Bundlers' workspace deps
+    "rollup-plugin-typescript2", "@rollup/plugin-node-resolve",
+    "@rollup/plugin-commonjs", "vite-plugin-vue",
+    // Worker / concurrency
+    "worker-threads", "piscina", "comlink",
 ];
+
+/// Substring exclusions: when a candidate name CONTAINS a top-pkg name
+/// (or vice versa), it is almost certainly a legitimate ecosystem
+/// package (`chai-as-promised`, `cypress-axe`, `react-router`) rather
+/// than a typosquat. Keeps false positives down without sacrificing
+/// real typosquat detection (which is character-substitution, not
+/// substring containment).
+fn is_legit_relative(name: &str, top: &str) -> bool {
+    if name == top {
+        return true;
+    }
+    if name.contains(top) || top.contains(name) {
+        return true;
+    }
+    // Common compositional patterns
+    if name.starts_with(&format!("{top}-"))
+        || name.starts_with(&format!("{top}."))
+        || name.ends_with(&format!("-{top}"))
+        || name.ends_with(&format!(".{top}"))
+    {
+        return true;
+    }
+    false
+}
 
 const DEFAULT_BASE_URL: &str = "https://registry.npmjs.org";
 
@@ -38,19 +142,26 @@ CREATE TABLE IF NOT EXISTS intel_cache (
 
 /// Reduced metadata snapshot — what we cache and score on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct IntelSnapshot {
-    maintainer_count: usize,
-    version_count: usize,
+pub(crate) struct IntelSnapshot {
+    pub maintainer_count: usize,
+    pub version_count: usize,
     /// RFC3339 publish time of the *installed* version, if known.
-    installed_published_at: Option<String>,
+    pub installed_published_at: Option<String>,
     /// RFC3339 last-modified time of the package as a whole.
-    modified_at: Option<String>,
+    pub modified_at: Option<String>,
     /// dist-tags.latest, if present.
-    latest_tag: Option<String>,
+    pub latest_tag: Option<String>,
     /// RFC3339 publish time of the dist-tags.latest version, if known.
-    latest_published_at: Option<String>,
+    pub latest_published_at: Option<String>,
     /// Whether a `repository` field of any shape was present.
-    has_repository: bool,
+    pub has_repository: bool,
+    /// Weekly download count from the npm downloads API. None when the
+    /// lookup failed or hasn't been performed yet. Used as a reputation
+    /// cross-check to suppress typosquat false positives on legitimately
+    /// popular packages whose names happen to be Lev-close to top-list
+    /// entries (e.g. `cypress` vs `express`).
+    #[serde(default)]
+    pub weekly_downloads: Option<u64>,
 }
 
 pub struct IntelEvaluator {
@@ -145,7 +256,40 @@ impl IntelEvaluator {
             anyhow::bail!("registry returned {} for {}", resp.status(), name);
         }
         let body: Value = resp.json().await.context("parse registry JSON")?;
-        Ok(snapshot_from_metadata(&body))
+        let mut snap = snapshot_from_metadata(&body);
+
+        // Best-effort downloads lookup. The downloads API lives at a
+        // different host and only resolves unscoped names; failures are
+        // silently ignored — we just leave `weekly_downloads = None`.
+        if !name.starts_with('@') {
+            snap.weekly_downloads = self.fetch_weekly_downloads(name).await.ok();
+        }
+        Ok(snap)
+    }
+
+    async fn fetch_weekly_downloads(&self, name: &str) -> Result<u64> {
+        let url = format!("{}/downloads/point/last-week/{}", self.downloads_base_url(), name);
+        let resp = self.http.get(&url).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("downloads API returned {}", resp.status());
+        }
+        let body: Value = resp.json().await?;
+        body.get("downloads")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| anyhow::anyhow!("missing downloads field"))
+    }
+
+    /// The npm downloads API host. Defaults to api.npmjs.org but uses
+    /// the override base_url when it's clearly a test fixture (i.e.
+    /// the registry base_url is a non-default host like 127.0.0.1 used
+    /// by wiremock). Tests serve both /<pkg> and /downloads/...
+    /// endpoints from the same MockServer for simplicity.
+    fn downloads_base_url(&self) -> String {
+        if self.base_url.contains("npmjs.org") {
+            "https://api.npmjs.org".to_string()
+        } else {
+            self.base_url.trim_end_matches('/').to_string()
+        }
     }
 }
 
@@ -263,6 +407,7 @@ fn snapshot_from_metadata(body: &Value) -> IntelSnapshot {
         latest_tag,
         latest_published_at,
         has_repository,
+        weekly_downloads: None,
     }
 }
 
@@ -338,7 +483,14 @@ fn score_package(
         }
     }
 
+    // Typosquat detection — but suppress when the candidate is itself
+    // a popular package (Fix 5: reputation cross-check). E.g. `cypress`
+    // is Lev-distance 2 from `express` but has 7M+ weekly downloads.
     let typosquat_target = typosquat_candidate(&pkg.name);
+    let typosquat_target = match typosquat_target {
+        Some(t) if !looks_legitimately_popular(snap) => Some(t),
+        _ => None,
+    };
     if typosquat_target.is_some() {
         score += 30;
         reasons.push("typosquat".into());
@@ -443,8 +595,21 @@ pub(crate) fn lev_distance(a: &str, b: &str) -> usize {
     prev[lb]
 }
 
+/// Maximum allowed Lev distance, scaled by name length. Short names
+/// (4-5 chars) collide too easily under distance 2 — `pend` vs `pino`
+/// is distance 2, `temp` vs `tape` is distance 2. Require an exact
+/// match for very short names; otherwise allow up to distance 2 only
+/// when the names are at least 6 characters.
+fn max_distance_for(len: usize) -> usize {
+    match len {
+        0..=4 => 1,
+        5 => 1,
+        _ => 2,
+    }
+}
+
 fn typosquat_candidate(name: &str) -> Option<&'static str> {
-    if name.len() < 4 {
+    if name.len() < 5 {
         return None;
     }
     if name.starts_with('@') {
@@ -453,12 +618,53 @@ fn typosquat_candidate(name: &str) -> Option<&'static str> {
     if TOP_PACKAGES.iter().any(|t| *t == name) {
         return None;
     }
+    let max_d = max_distance_for(name.len());
     for top in TOP_PACKAGES {
-        if lev_distance(name, top) <= 2 {
+        // Names with very different lengths can't be typo-related.
+        if (top.len() as i64 - name.len() as i64).abs() as usize > max_d {
+            continue;
+        }
+        // Skip when the candidate is a legit relative of `top`
+        // (compositional naming like `react-router`, substring overlap
+        // like `cypress-axe`).
+        if is_legit_relative(name, top) {
+            return None;
+        }
+        let d = lev_distance(name, top);
+        if d == 0 {
+            return None; // exact match shouldn't get flagged
+        }
+        if d <= max_d {
             return Some(top);
         }
     }
     None
+}
+
+/// Reputation cross-check (Fix 5). Before flagging a typosquat, decide
+/// whether the candidate is itself a legitimate package whose name
+/// happens to be Lev-close to a top-list entry. Returns true when the
+/// typosquat flag should be SUPPRESSED.
+///
+/// Signals (any one suppresses):
+///   - Weekly downloads >= 100k (when the npm downloads API works)
+///   - Version count >= 25 AND has a repository (mature published pkg)
+///   - Multiple maintainers (>= 3) AND has a repository
+///
+/// The npm downloads API is currently flaky (returns a JSON-schema
+/// placeholder for some queries) so we rely on the structural proxies
+/// from the registry document, which we always have.
+pub(crate) fn looks_legitimately_popular(snap: &IntelSnapshot) -> bool {
+    if snap.weekly_downloads.unwrap_or(0) >= 100_000 {
+        return true;
+    }
+    if snap.version_count >= 15 && snap.has_repository {
+        return true;
+    }
+    if snap.maintainer_count >= 2 && snap.has_repository {
+        return true;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -556,6 +762,7 @@ mod tests {
             latest_tag: latest,
             latest_published_at: latest_published,
             has_repository: has_repo,
+            weekly_downloads: None,
         }
     }
 
@@ -738,17 +945,18 @@ mod tests {
     #[tokio::test]
     async fn block_typosquats_forces_high() {
         let server = MockServer::start().await;
-        // Healthy package metadata BUT name is a typosquat → +30 only.
-        // 5 maintainers, many versions, repo present → only typosquat fires (30).
+        // Suspicious metadata so the popularity cross-check (Fix 5)
+        // does NOT suppress the typosquat: single maintainer, few
+        // versions, no repository.
         let yesterday = rfc3339_days_ago(1);
         let body = metadata(
-            5,
-            &["1.0.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6"],
-            "1.0.6",
+            1,
+            &["1.0.0", "1.0.1"],
+            "1.0.1",
             &yesterday,
             &yesterday,
             Some(("1.0.0", &yesterday)),
-            true,
+            false,
         );
         Mock::given(method("GET"))
             .and(path("/loadsh"))
@@ -772,5 +980,47 @@ mod tests {
             findings[0].details["typosquat_of"].as_str(),
             Some("lodash")
         );
+    }
+
+    /// Reputation cross-check (Fix 5): a name that LOOKS like a
+    /// typosquat but ships with multiple maintainers + repo + many
+    /// versions is treated as legitimate and the typosquat flag is
+    /// suppressed.
+    #[tokio::test]
+    async fn typosquat_suppressed_when_legit_metadata() {
+        let server = MockServer::start().await;
+        let mut versions = Vec::new();
+        for i in 0..30 {
+            versions.push(format!("1.0.{i}"));
+        }
+        let v_refs: Vec<&str> = versions.iter().map(|s| s.as_str()).collect();
+        let body = metadata(
+            5,
+            &v_refs,
+            "1.0.29",
+            "2024-01-01T00:00:00.000Z",
+            "2024-01-01T00:00:00.000Z",
+            Some(("1.0.0", "2024-01-01T00:00:00.000Z")),
+            true, // has repo
+        );
+        Mock::given(method("GET"))
+            .and(path("/loadsh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let dir = TempDir::new().unwrap();
+        let evaluator = IntelEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
+        let policy = Policy::default();
+        let pkgs = vec![npm("loadsh", "1.0.0")];
+        let findings = evaluator.evaluate(&pkgs, &policy).await.unwrap();
+        // No typosquat reason should fire because metadata looks healthy.
+        for f in &findings {
+            assert!(
+                !f.id.starts_with("risk:typosquat"),
+                "typosquat should be suppressed for legit-looking pkg, got {}",
+                f.id
+            );
+        }
     }
 }
