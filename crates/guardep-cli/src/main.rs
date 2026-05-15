@@ -39,6 +39,23 @@ impl From<FailOnArg> for commands::audit::FailOn {
     }
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum FixTargetArg {
+    /// Smallest in-major bump that clears every finding (default).
+    Safe,
+    /// Cheapest in-major bump that clears at least one finding.
+    Min,
+}
+
+impl From<FixTargetArg> for commands::fix::FixTarget {
+    fn from(f: FixTargetArg) -> Self {
+        match f {
+            FixTargetArg::Safe => commands::fix::FixTarget::Safe,
+            FixTargetArg::Min => commands::fix::FixTarget::Min,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "guardep", version, about = "Block compromised dependencies before they install")]
 struct Cli {
@@ -57,16 +74,27 @@ enum Cmd {
         /// Group findings by package@version, joining advisory IDs with commas.
         #[arg(long)]
         collapse: bool,
-        /// Surface single-maintainer-only findings as Info. Off by
-        /// default because most npm packages have one maintainer and
-        /// reporting all of them is noise.
-        #[arg(long)]
-        report_single_maintainer: bool,
+        /// Surface Info-tier signals (single-maintainer alone, etc.).
+        /// Off by default because Info findings are by design noisy
+        /// inventory data, not actionable alerts.
+        #[arg(long, alias = "report-single-maintainer")]
+        info: bool,
         /// Threshold above which the audit exits non-zero. `block`
         /// (default): exit 2 on blocks. `warn`: exit 1 on warnings,
         /// 2 on blocks. `never`: always exit 0 (informational).
         #[arg(long, value_enum, default_value_t = FailOnArg::Block)]
         fail_on: FailOnArg,
+    },
+    /// Generate (and optionally apply) the upgrade commands that
+    /// resolve fix-able findings in the current project.
+    Fix {
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        #[arg(long, value_enum, default_value_t = FixTargetArg::Safe)]
+        target: FixTargetArg,
+        /// Actually run the install commands instead of just printing them.
+        #[arg(long)]
+        apply: bool,
     },
     /// Install symlinks (npm/mvn/gradle) into ~/.guardep/bin.
     InstallShims {
@@ -100,15 +128,11 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Audit { path, format, collapse, report_single_maintainer, fail_on } => {
-            commands::audit::run(
-                &path,
-                format.into(),
-                collapse,
-                report_single_maintainer,
-                fail_on.into(),
-            )
-            .await
+        Cmd::Audit { path, format, collapse, info, fail_on } => {
+            commands::audit::run(&path, format.into(), collapse, info, fail_on.into()).await
+        }
+        Cmd::Fix { path, target, apply } => {
+            commands::fix::run(&path, target.into(), apply).await
         }
         Cmd::InstallShims { force } => commands::install_shims::run(force),
         Cmd::Shim { tool, args } => shim::run(&tool, &args).await,

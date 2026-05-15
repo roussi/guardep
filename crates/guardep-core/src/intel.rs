@@ -131,8 +131,11 @@ fn is_legit_relative(name: &str, top: &str) -> bool {
 const DEFAULT_BASE_URL: &str = "https://registry.npmjs.org";
 
 /// Reduced metadata snapshot — what we cache and score on.
+///
+/// Public to support the validation-set integration test in `tests/`.
+/// External callers should not depend on the field shape stability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct IntelSnapshot {
+pub struct IntelSnapshot {
     pub maintainer_count: usize,
     pub version_count: usize,
     /// RFC3339 publish time of the *installed* version, if known.
@@ -413,6 +416,16 @@ fn primary_reason(reasons: &[String]) -> &str {
     reasons.first().map(|s| s.as_str()).unwrap_or("risk")
 }
 
+/// Public scoring entrypoint for validation-set integration tests.
+/// External callers should treat this as test-only API.
+pub fn score_package_for_test(
+    pkg: &PackageRef,
+    snap: &IntelSnapshot,
+    policy: &Policy,
+) -> Option<Finding> {
+    score_package(pkg, snap, policy, snap.installed_published_at.clone())
+}
+
 fn score_package(
     pkg: &PackageRef,
     snap: &IntelSnapshot,
@@ -487,14 +500,14 @@ fn score_package(
 
     // Suppress single-maintainer-only findings: this is the median state
     // of npm and emitting one warning per single-maintainer package is
-    // pure noise. When opted in via `report_single_maintainer`, surface
+    // pure noise. When opted in via `show_info`, surface
     // them as `Info` so they appear in --report-single-maintainer mode
     // without triggering warn/block at any policy.
     let only_reason_is_single_maintainer =
         reasons.len() == 1 && reasons[0] == "single-maintainer";
 
     let mut severity = if only_reason_is_single_maintainer {
-        if !policy.report_single_maintainer {
+        if !policy.show_info {
             return None;
         }
         FindingSeverity::Info
@@ -814,7 +827,7 @@ mod tests {
             "single-maintainer-only should be suppressed by default"
         );
         let mut policy_info = policy.clone();
-        policy_info.report_single_maintainer = true;
+        policy_info.show_info = true;
         let f = score_package(&pkg, &snap_25, &policy_info, None)
             .expect("emit when reporting enabled");
         assert_eq!(f.severity, FindingSeverity::Info);
@@ -980,7 +993,7 @@ mod tests {
 
     /// Single-maintainer-only findings are suppressed by default
     /// because >50% of npm packages have one maintainer and emitting a
-    /// finding for each is pure noise. With `report_single_maintainer`
+    /// finding for each is pure noise. With `show_info`
     /// enabled they surface as `Info` so users can audit them without
     /// any policy ever blocking or warning on them.
     #[test]
@@ -991,7 +1004,7 @@ mod tests {
         assert!(score_package(&pkg, &snap, &policy, None).is_none());
 
         let mut opt_in = policy.clone();
-        opt_in.report_single_maintainer = true;
+        opt_in.show_info = true;
         let f = score_package(&pkg, &snap, &opt_in, None).expect("emit");
         assert_eq!(f.severity, FindingSeverity::Info);
         assert_eq!(f.details["reasons"][0].as_str(), Some("single-maintainer"));

@@ -74,13 +74,11 @@ pub struct Policy {
     /// (fresh-publish risk window for compromise detection).
     #[serde(default = "default_fresh_publish_days")]
     pub warn_if_fresh_publish_days: u32,
-    /// Surface single-maintainer findings as Info even when no other
-    /// risk reason fires. Default false because most npm packages have
-    /// one maintainer and emitting all of them is pure noise. Enable
-    /// via `--report-single-maintainer` CLI flag (or set this to true
-    /// in `guardep.toml`).
+    /// Surface Info-tier findings (single-maintainer alone, etc.).
+    /// Off by default because Info findings are noisy by design. Enable
+    /// via `--info` CLI flag or set true in `guardep.toml`.
     #[serde(default)]
-    pub report_single_maintainer: bool,
+    pub show_info: bool,
 
     // ── Provenance policy (Phase 1B) ─────────────────────────────────────
     /// Glob patterns for packages that MUST have valid Sigstore provenance.
@@ -184,7 +182,7 @@ impl Default for Policy {
             warn_if_unmaintained_days: 730,
             block_typosquats: true,
             warn_if_fresh_publish_days: 7,
-            report_single_maintainer: false,
+            show_info: false,
             require_provenance: Vec::new(),
             missing_provenance: Action::Block,
             provenance_mismatch: Action::Block,

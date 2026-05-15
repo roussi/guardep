@@ -31,10 +31,10 @@ pub async fn run(
     path: &Path,
     format: Format,
     collapse: bool,
-    report_single_maintainer: bool,
+    show_info: bool,
     fail_on: FailOn,
 ) -> Result<()> {
-    let report = evaluate_project(path, report_single_maintainer).await?;
+    let report = evaluate_project(path, show_info).await?;
     match format {
         Format::Table => crate::report::print_verdict(&report, collapse),
         Format::Json => crate::report::print_json(&report, collapse)?,
@@ -55,7 +55,7 @@ pub async fn run(
 
 pub async fn evaluate_project(
     path: &Path,
-    report_single_maintainer: bool,
+    show_info: bool,
 ) -> Result<FindingsReport> {
     let (packages, lockfile_kind) = auto_resolve(path)?;
     eprintln!(
@@ -64,17 +64,17 @@ pub async fn evaluate_project(
         packages.len(),
         lockfile_kind
     );
-    evaluate_packages(path, packages, report_single_maintainer).await
+    evaluate_packages(path, packages, show_info).await
 }
 
 pub async fn evaluate_packages(
     path: &Path,
     packages: Vec<PackageRef>,
-    report_single_maintainer: bool,
+    show_info: bool,
 ) -> Result<FindingsReport> {
     let mut policy = Policy::load(&path.join("guardep.toml"))?;
-    if report_single_maintainer {
-        policy.report_single_maintainer = true;
+    if show_info {
+        policy.show_info = true;
     }
 
     let dirs = directories::ProjectDirs::from("dev", "guardep", "guardep")
