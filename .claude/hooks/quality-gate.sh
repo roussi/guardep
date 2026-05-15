@@ -26,28 +26,28 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 echo "" >&2
-echo "── guardep quality gate ──────────────────────────" >&2
+echo "-- guardep quality gate -----------------------------" >&2
 
 # fmt --check
 if cargo fmt --all -- --check >/dev/null 2>&1; then
-  echo "✓ rustfmt" >&2
+  echo "OK rustfmt" >&2
 else
-  echo "✗ rustfmt: run \`cargo fmt --all\`" >&2
+  echo "FAIL rustfmt: run \`cargo fmt --all\`" >&2
 fi
 
 # clippy
 if cargo clippy --workspace --all-targets --all-features -- -D warnings >/dev/null 2>&1; then
-  echo "✓ clippy" >&2
+  echo "OK clippy" >&2
 else
-  echo "✗ clippy: run \`cargo clippy --workspace --all-targets --all-features -- -D warnings\`" >&2
+  echo "FAIL clippy: run \`cargo clippy --workspace --all-targets --all-features -- -D warnings\`" >&2
 fi
 
 # test (only if the previous gates passed; tests are slow)
 if cargo test --workspace --quiet >/dev/null 2>&1; then
-  echo "✓ tests" >&2
+  echo "OK tests" >&2
 else
-  echo "✗ tests: run \`cargo test --workspace\`" >&2
+  echo "FAIL tests: run \`cargo test --workspace\`" >&2
 fi
 
-echo "──────────────────────────────────────────────────" >&2
+echo "--------------------------------------------------" >&2
 exit 0

@@ -10,19 +10,19 @@ line is `OK`.
 ```bash
 set -e
 
-echo "→ rustfmt"
+echo "-> rustfmt"
 cargo fmt --all -- --check
 
-echo "→ clippy"
+echo "-> clippy"
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-echo "→ tests"
+echo "-> tests"
 cargo test --workspace --all-targets
 
-echo "→ release build"
+echo "-> release build"
 cargo build --release --bin guardep
 
-echo "→ cargo audit"
+echo "-> cargo audit"
 if command -v cargo-audit >/dev/null 2>&1; then
   cargo audit
 else
@@ -30,7 +30,7 @@ else
 fi
 
 echo ""
-echo "✓ all gates passed — safe to push"
+echo "[OK] all gates passed - safe to push"
 ```
 
 If a gate fails, the script exits non-zero at that step and the

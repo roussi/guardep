@@ -15,7 +15,7 @@ Workspace layout, evaluator design, policy model, shim pattern, and
 the project's hard rules (no backwards-compat, no emoji, comments
 only when WHY is non-obvious) are documented in
 [`.claude/skills/guardep-patterns/SKILL.md`](./.claude/skills/guardep-patterns/SKILL.md).
-That skill is the source of truth — read it before non-trivial work.
+That skill is the source of truth - read it before non-trivial work.
 
 ## Daily workflow
 
@@ -51,7 +51,7 @@ cargo test --workspace --all-targets
 
 - Don't add backwards-compat shims. If a name is wrong, change it
   everywhere. Pre-users project; readme + git log are the changelog.
-- Don't catch errors silently in evaluators — surface as a
+- Don't catch errors silently in evaluators - surface as a
   `Finding` (e.g. `MissingProvenance` style "trust-root-unavailable")
   or bubble.
 - Don't add a feature flag for behaviour you can flip at the CLI.

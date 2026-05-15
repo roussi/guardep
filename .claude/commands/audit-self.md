@@ -4,7 +4,7 @@ description: Run guardep against its own Cargo dependency tree. Catches CVEs in 
 
 Build the release binary if missing, then point `cargo audit` at the
 workspace's `Cargo.lock` (RustSec advisory DB) and report any
-findings. guardep itself doesn't yet handle Rust ecosystems — that's
+findings. guardep itself doesn't yet handle Rust ecosystems - that's
 why we use `cargo audit` here. Once Rust support lands in guardep,
 swap the command for `./target/release/guardep audit --path .`.
 

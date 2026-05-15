@@ -1,4 +1,4 @@
-# `.claude/` — guardep project setup for Claude Code
+# `.claude/` - guardep project setup for Claude Code
 
 Tracked configuration that makes Claude Code productive on this
 repository: project-level skill, slash commands, hooks, and a
@@ -13,9 +13,9 @@ permissions allowlist.
 │   └── guardep-patterns/
 │       └── SKILL.md                # architecture, conventions, evaluator patterns
 ├── commands/
-│   ├── audit-self.md               # /audit-self — RustSec advisory scan on our deps
-│   ├── pre-push.md                 # /pre-push — local mirror of CI gates
-│   └── release.md                  # /release patch|minor|major — bump + tag (no push)
+│   ├── audit-self.md               # /audit-self - RustSec advisory scan on our deps
+│   ├── pre-push.md                 # /pre-push - local mirror of CI gates
+│   └── release.md                  # /release patch|minor|major - bump + tag (no push)
 └── hooks/
     ├── format-rust.sh              # PostToolUse: cargo fmt after Rust edits
     └── quality-gate.sh             # Stop: end-of-turn fmt+clippy+test summary
@@ -23,13 +23,13 @@ permissions allowlist.
 
 ## Hooks
 
-- **`PostToolUse` → `format-rust.sh`** runs `cargo fmt --all` whenever
+- **`PostToolUse` -> `format-rust.sh`** runs `cargo fmt --all` whenever
   Claude edits a `*.rs` file. Silent on success. Never blocks the
   tool call (CI's `cargo fmt --check` is the authoritative gate).
-- **`Stop` → `quality-gate.sh`** runs the same three gates as CI
-  (fmt, clippy, test) at end of turn and prints a `✓`/`✗` summary
+- **`Stop` -> `quality-gate.sh`** runs the same three gates as CI
+  (fmt, clippy, test) at end of turn and prints a `[OK]`/`[X]` summary
   per gate. Skipped when no Rust files changed or when
-  `GUARDEP_SKIP_QUALITY_GATE=1`. Always exits 0 — informational
+  `GUARDEP_SKIP_QUALITY_GATE=1`. Always exits 0 - informational
   only, never blocks.
 
 ## Permissions
@@ -57,7 +57,7 @@ when picking up a new task.
 - Hooks are POSIX shell. If you don't want them, delete
   `.claude/hooks/` and the corresponding `hooks` block in
   `settings.json`.
-- Slash commands are plain markdown with YAML frontmatter — copy,
+- Slash commands are plain markdown with YAML frontmatter - copy,
   rename, edit.
 
 ## What is NOT here (intentionally)
@@ -65,5 +65,5 @@ when picking up a new task.
 - No secrets, API keys, or personal info. This directory is
   committed to git and public.
 - No machine-specific paths.
-- No user-level settings (model, theme, etc.) — those live in
+- No user-level settings (model, theme, etc.) - those live in
   `~/.claude/settings.json`.

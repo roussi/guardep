@@ -1,68 +1,98 @@
-# guardep
+<h1 align="center">guardep</h1>
 
-> Deterministic supply-chain audit and pre-install gate for **npm / pnpm / yarn**, with optional **maven / gradle** support coming.
+<p align="center">
+  <strong>OSV-Scanner with teeth.</strong><br>
+  Deterministic supply-chain gate for <strong>npm / pnpm / yarn</strong>.
+  Blocks compromised installs <em>before</em> <code>postinstall</code> runs - not after.
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
-[![Status: MVP](https://img.shields.io/badge/Status-MVP-yellow.svg)]()
+<p align="center">
+  <a href="https://github.com/aroussi/guardep/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/aroussi/guardep/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/aroussi/guardep/actions/workflows/audit.yml"><img alt="Audit" src="https://github.com/aroussi/guardep/actions/workflows/audit.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
+  <a href="https://www.rust-lang.org/"><img alt="Built with Rust" src="https://img.shields.io/badge/Built%20with-Rust-orange.svg"></a>
+  <img alt="Status" src="https://img.shields.io/badge/Status-MVP-yellow.svg">
+</p>
 
-`guardep` audits a JavaScript project's resolved dependency graph against four finding sources (OSV.dev, npm registry intel, install scripts, Sigstore provenance) and refuses to forward to the real package manager when policy is violated. It is meant to sit between you and `npm install`, not to scan after the fact.
+---
 
-## What it actually does today (be honest)
+`npm audit`, Trivy, OSV-Scanner all run **after** the package is on disk and `postinstall` has already executed. By then a compromised package has had its hook fire. The 2025 Shai-Hulud worm and the April 2026 Mini Shai-Hulud TanStack/SAP/axios compromises both worked because that window stays open.
+
+`guardep` closes the window for the most common path: it sits between you and `npm install` via PATH-based shims, audits the resolved dependency graph against four finding sources (OSV.dev, npm registry intel, install scripts, Sigstore provenance), and refuses to forward to the real package manager when policy is violated.
+
+## Quick start
+
+```bash
+git clone https://github.com/aroussi/guardep && cd guardep
+cargo build --release
+
+# Audit any project
+./target/release/guardep audit --path ~/code/my-frontend
+
+# Wire npm/pnpm/yarn through guardep system-wide (asks first; reversible)
+./target/release/guardep install-shims
+
+# Now every install is gated:
+cd ~/code/my-frontend
+npm install              # blocked if any critical CVE / known malware / suspicious script
+```
+
+Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Backups are restored from `<rc>.guardep.bak`.
+
+## Features
+
+- **Pre-install gate.** PATH shim sits between you and `npm`/`pnpm`/`yarn`. Audits the resolved graph before forwarding. Critical/malware findings exit 2; the real package manager never runs.
+- **Four evaluators in parallel.** OSV.dev advisories, npm registry intel (maintainers, versions, abandonment, typosquats), install-script analysis, Sigstore provenance.
+- **Composite risk scoring.** Socket-style 0-100 score from weighted reasons. Single-maintainer alone -> Info; few-versions + fresh-publish + single-maintainer -> Medium; typosquat alone -> High.
+- **AST static analysis** of postinstall scripts. Detects process-spawn, credential reads, dynamic code execution, base64-decode -> eval chains, dynamic require/import, network calls. AST results promote regex severity (never demote).
+- **Sigstore crypto verification.** Fulcio cert chain, DSSE signature, SCT. Identity bound to GitHub Actions OIDC. Falls back to presence + identity offline. Rekor inclusion proof pending upstream sigstore-rs release.
+- **Honest output.** Findings sorted Critical -> Info, alphabetical within tier. `--severity` filters display threshold. `--fail-on` controls exit code separately. Composite risk scores show every contributing reason.
+- **Reversible install.** `install-shims` backs up rc files to `<file>.guardep.bak` and brackets edits with marker comments. `uninstall-shims` strips the block exactly.
+
+### Capability matrix
 
 | Capability                            | Status                                                                                     |
 | ------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Audit existing lockfile               | Works. npm/pnpm/yarn lockfiles parsed, four evaluators run in parallel.                    |
+| Audit existing lockfile               | Works. npm/pnpm/yarn lockfiles parsed, four evaluators in parallel.                        |
 | OSV.dev advisory matching             | Works. Batch endpoint, SQLite cache, semver range matching, per-major fix selection.       |
-| Postinstall script heuristic          | String-match heuristic (~10 regex rules) on the shell command, plus **AST-based static analysis** of any referenced JS file (`node X.js` pattern). AST rules cover process spawn calls, credential-path file reads, dynamic code execution, base64-decode→eval chains, dynamic require/import, network calls. AST results promote the regex severity (never demote). |
 | npm registry risk scoring             | Works. Maintainer count, version count, fresh-publish, abandonment, typosquat detection.   |
-| Sigstore provenance                   | Presence + identity + **full crypto verification** (Fulcio cert chain, DSSE signature, SCT). Falls back to presence + identity when the trust root cannot be initialised (offline). Rekor inclusion proof check is not yet implemented (TODO upstream in `sigstore-rs`). |
+| Postinstall script analysis           | Regex heuristic + AST static analysis of referenced JS files (process spawn, cred reads, eval chains, network calls). |
+| Sigstore provenance                   | Presence + identity + full crypto verification (Fulcio cert chain, DSSE, SCT). Inclusion proof pending sigstore-rs upstream release. |
 | Pre-install gate (`npm ci`)           | Works when invoked through the shim AND lockfile is up-to-date.                            |
-| Pre-install gate (`npm install foo`)  | **Limited.** Currently reads existing lockfile, so brand-new packages bypass until lockfile updates. See "Threat model" below. |
-| Maven                                 | Resolves transitive graph via `mvn dependency:tree -DoutputType=tgf`. OSV ranges use a Maven-correct version comparator (qualifier ordering, snapshot/sp semantics). No shim yet. |
-| Gradle                                | Not implemented. Shim passes through.                                                      |
-| Bypass via `/usr/local/bin/npm`       | **Possible.** PATH-based shim is not airtight.                                             |
+| Pre-install gate (`npm install foo`)  | Works via temp-dir dry-run resolution (copies `package.json` into a tempdir, materializes lockfile with `npm install --package-lock-only --ignore-scripts`, audits the result). |
+| Maven                                 | Resolves transitive graph via `mvn dependency:tree -DoutputType=tgf`. OSV ranges use Apache version-order comparator. No shim yet. |
+| Gradle                                | Not implemented.                                                                            |
+| Bypass via `/usr/local/bin/npm`       | **Possible.** PATH-based shim is not airtight against an attacker who already has shell access. |
 
-## Why this exists
+## Installation
 
-`npm audit`, Trivy, OSV-Scanner all run **after** the package is on disk and `postinstall` has executed. By then a compromised package has already had its `postinstall` hook fire. The 2025 Shai-Hulud worm and the April 2026 Mini Shai-Hulud TanStack/SAP/axios compromises both worked because that window stays open.
+### From source (only option for now)
 
-guardep tries to close it for the most common path (`npm install` with an up-to-date lockfile, invoked through the shim).
-
-## Install
+Pre-built binaries via `guardep install-shims` and `cargo install` are coming with the first tagged release. For now, build locally:
 
 ```bash
-git clone https://github.com/aroussi/guardep
-cd guardep
+git clone https://github.com/aroussi/guardep && cd guardep
 cargo build --release
-
-./target/release/guardep audit --path ./my-project
-
-# Install shims and wire PATH in your shell rc files
-./target/release/guardep install-shims
+sudo install -m 0755 target/release/guardep /usr/local/bin/guardep   # optional
 ```
 
-`install-shims` does two things:
+### Wire it through your shell
 
-1. Creates symlinks in `~/.guardep/bin/{npm,pnpm,yarn}` that point at the guardep binary.
-2. Edits your shell rc files (`~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.config/fish/config.fish` on Unix; `$PROFILE` on Windows PowerShell) to prepend `~/.guardep/bin` to `PATH`.
+`guardep install-shims` does two things:
 
-Each rc file is backed up to `<file>.guardep.bak` once before the first edit, and changes sit between marker comments (`# >>> guardep-shim >>>` / `# <<< guardep-shim <<<`) so removal is exact. On a tty the command asks before editing; in CI / piped input it proceeds.
+1. Symlinks `~/.guardep/bin/{npm,pnpm,yarn}` to the guardep binary.
+2. Prepends `~/.guardep/bin` to `PATH` in `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.config/fish/config.fish` (Unix) or `$PROFILE` (Windows PowerShell).
+
+Each rc file is backed up to `<file>.guardep.bak` before the first edit. Changes sit between `# >>> guardep-shim >>>` / `# <<< guardep-shim <<<` marker comments so removal is exact. On a tty the command asks before editing; in CI / piped input it proceeds.
 
 Flags:
-- `--no-wire-path` — symlink only, you add to `PATH` yourself.
-- `--yes` / `-y` — skip the interactive prompt.
-- `--force` — overwrite existing symlinks and re-inject the rc block.
+- `--no-wire-path` - symlinks only, edit PATH yourself.
+- `--yes` / `-y` - skip the interactive prompt.
+- `--force` - overwrite existing symlinks and re-inject the rc block.
 
-Restart your shell (or `source ~/.zshrc`) to activate. To revert:
+Reverse with `guardep uninstall-shims`: strips the symlinks and the marker block from every rc file. Backups stay in place.
 
-```bash
-./target/release/guardep uninstall-shims
-```
-
-Removes the symlinks and strips the marker block from every rc file. Backups stay in place.
-
-## Use
+## Usage
 
 ### Audit a project
 
@@ -76,8 +106,8 @@ guardep audit --path ./frontend --fail-on warn             # CI: exit 1 on warni
 guardep --verbose audit --path ./frontend                  # evaluator timings + HTTP logs
 ```
 
-Severity levels (high → low): `critical`, `high`, `medium`, `low` (default), `info`.
-Findings are sorted Critical → Info, then alphabetically by package within each tier.
+Severity levels (high -> low): `critical`, `high`, `medium`, `low` (default), `info`.
+Findings are sorted Critical -> Info, then alphabetically by package within each tier.
 
 ### Use as a shim
 
@@ -153,7 +183,7 @@ allowlist = []                                # blanket: "axios@1.13.2"
 > Postinstall findings are suppressed via `finding_allowlist` (the
 > same machinery as OSV findings), keyed by `pkg@version` and the
 > stable finding ID (e.g. `script:postinstall:<sha>`). There's no
-> separate "trust this script hash" knob — finding IDs already
+> separate "trust this script hash" knob - finding IDs already
 > include the script hash and are scoped to a specific package, so
 > a malicious version of the same package wouldn't match the same
 > ID.
@@ -172,24 +202,24 @@ crates/
 
 All four evaluators implement one trait and run concurrently. Findings are merged, deduped, and rendered together.
 
-## Threat model (be honest)
+## Threat model
 
-guardep is intended to defend against:
-- **Compromised package publishes** that depend on a `postinstall` hook firing
-- **Known CVEs** in dependencies, gated by severity per policy
-- **Suspicious install scripts**, via heuristic scoring of script bodies
-- **Typosquats** of popular packages, with reputation cross-check to suppress legit lookalikes
-- **Missing or mismatched provenance** for packages flagged in policy
+**Defends against:**
+- Compromised package publishes that rely on a `postinstall` hook firing.
+- Known CVEs in transitive dependencies, gated by severity per policy.
+- Suspicious install scripts, via regex + AST scoring of script bodies and any referenced JS files.
+- Typosquats of popular packages, with reputation cross-check to suppress legit lookalikes (e.g. `cypress` vs `express`).
+- Missing or mismatched Sigstore provenance for packages flagged in policy.
 
-guardep does **not** currently defend against:
+**Does NOT defend against:**
 - **Targeted attacks against guardep itself.** A malicious shell rc, modified shim binary, or PATH manipulation defeats it.
-- **Bypass via absolute path.** `/usr/local/bin/npm` skips the shim entirely.
-- **`--no-package-lock`.** Without a lockfile, the shim runs npm first and audits after, which is exactly what we are trying to avoid. Mitigation: in-progress (true dry-run resolution).
-- **Yarn lockfiles, pre-pre-Berry.** Currently parses package-lock.json only.
-- **Forged Sigstore attestations.** We verify presence, identity, the Fulcio certificate chain, the SCT, and the DSSE signature. We do NOT yet verify the Rekor inclusion proof (Merkle witness): the implementation [merged upstream](https://github.com/sigstore/sigstore-rs/pull/543) in Jan 2026 but isn't in a published `sigstore` crate version yet. Without the inclusion proof, an attacker who forges a bundle and bypasses public Rekor logging can still defeat the check. We pin to released crates.io versions only (no `git` deps for crypto code) and will bump as soon as the next sigstore release ships.
+- **Bypass via absolute path.** `/usr/local/bin/npm` skips the shim entirely. This is by design - the shim is friction, not enforcement.
+- **`--no-package-lock`.** The shim refuses to proceed in this mode (exit 1) rather than running blind.
+- **Yarn lockfiles, pre-Berry.** Currently parses `package-lock.json` and Berry's resolved lockfile only.
+- **Forged Sigstore attestations.** We verify presence, identity, Fulcio cert chain, SCT, and DSSE signature. We do **not** yet verify the Rekor inclusion proof - the implementation [merged upstream](https://github.com/sigstore/sigstore-rs/pull/543) in Jan 2026 but isn't in a published `sigstore` crate version. Pinned to released crates.io versions only (no `git` deps for crypto code); will bump as soon as the next sigstore release ships.
 - **Zero-day malware not yet in OSV** that also passes the postinstall heuristic and risk scoring.
-- **Vulnerabilities in code your team writes.** Use SAST/DAST.
-- **Container base image vulnerabilities.** Use Trivy.
+- **Vulnerabilities in code your team writes.** Use SAST/DAST for that.
+- **Container base image vulnerabilities.** Use [Trivy](https://github.com/aquasecurity/trivy) for that.
 
 ## How it compares
 
@@ -204,38 +234,54 @@ guardep does **not** currently defend against:
 | Open source                  | yes       | yes         | yes          | no               | **yes (MIT)**        |
 | Container / IaC scan         | no        | no          | yes          | no               | no                   |
 
-## Known limitations and roadmap
+## Roadmap
 
-- [ ] **True pre-install resolution.** Use `npm install --dry-run --json` to audit the *intended* graph instead of the existing lockfile. Eliminates the "new package bypasses audit" gap.
-- [x] **AST-based postinstall analysis** of referenced JS files via `swc_ecma_parser`. Distinguishes literal-arg process-spawn calls from dynamic ones. Cross-file dataflow analysis is still future work.
-- [x] **Sigstore crypto verification.** Fulcio cert chain, DSSE signature, SCT, Identity policy bound to GitHub Actions OIDC issuer.
-- [ ] **Rekor inclusion proof.** Implementation merged upstream in [sigstore-rs#543](https://github.com/sigstore/sigstore-rs/pull/543) (Jan 2026) but not yet released to crates.io. We're pinned to `sigstore = "0.13"` (the latest release) which still skips the proof. Will bump to 0.14 (or whatever ships the merge) and flip `offline=false` once it's published.
-- [x] **Maven resolver** (`mvn dependency:tree -DoutputType=tgf`) with Apache version-order comparator
-- [ ] **Maven shim** (intercept install-equivalent invocations)
+- [x] **Temp-dir pre-install resolution.** Audits the intended graph (`npm install foo@latest`), not just the existing lockfile.
+- [x] **AST postinstall analysis** via `swc_ecma_parser`. Cross-file dataflow is still future work.
+- [x] **Sigstore crypto verification.** Fulcio cert chain, DSSE signature, SCT, identity policy bound to the GitHub Actions OIDC issuer.
+- [x] **Maven resolver** (`mvn dependency:tree -DoutputType=tgf`) with Apache version-order comparator.
+- [x] **Cross-platform PATH wiring** (zsh, bash, fish, PowerShell) with idempotent install + clean uninstall.
+- [x] **Multi-OS release pipeline** (Linux x86/arm, macOS x86/arm, Windows x86) building tarballs + zips + sha256s, attached to GitHub Releases.
+- [ ] **Rekor inclusion proof.** Pending [sigstore-rs#543](https://github.com/sigstore/sigstore-rs/pull/543) shipping to crates.io.
+- [ ] **Maven shim** (intercept install-equivalent invocations).
 - [ ] **Gradle resolver.**
 - [ ] **GitHub Action wrapper.**
 - [ ] **SARIF output.**
-- [ ] **Cargo dist / Homebrew release pipeline.** Currently `cargo install` from source only.
+- [ ] **`cargo install guardep`** + Homebrew tap.
+- [ ] **Cargo / pip / RubyGems** ecosystem support beyond Maven + npm.
 
-## Development
+## Contributing
+
+Issues and PRs welcome. Before opening a PR, run the local mirror of CI:
 
 ```bash
-cargo build
-cargo test
-cargo run -- audit --path /path/to/project --collapse
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+```
 
-# Bust caches to force fresh fetches
+Or just `claude` and run `/pre-push` - the bundled slash command (in [`.claude/commands/`](./.claude/commands/)) does all of the above and a `cargo audit` pass. The project ships an opinionated [`.claude/`](./.claude/) setup so contributors using Claude Code inherit the same conventions, hooks, and permissions.
+
+Useful one-offs while hacking:
+
+```bash
+# Bust the SQLite advisory cache to force fresh OSV fetches
 rm -f ~/Library/Caches/dev.guardep.guardep/*.db    # macOS
 rm -f ~/.cache/guardep/*.db                         # Linux
+
+# Run guardep against a fixture without rebuilding
+cargo run -- audit --path /path/to/project --collapse
 ```
 
 ## Acknowledgements
 
-- [OSV.dev](https://osv.dev/) for the unified advisory database
-- [GitHub Advisory Database](https://github.com/advisories)
-- [Sigstore](https://www.sigstore.dev/) and the npm provenance team
-- [Aqua Security Trivy](https://github.com/aquasecurity/trivy) and [OSV-Scanner](https://github.com/google/osv-scanner) for proving the model
+- [OSV.dev](https://osv.dev/) for the unified advisory database.
+- [GitHub Advisory Database](https://github.com/advisories) for primary reporting.
+- [Sigstore](https://www.sigstore.dev/) and the npm provenance team for making attestation tractable.
+- [Trivy](https://github.com/aquasecurity/trivy), [OSV-Scanner](https://github.com/google/osv-scanner), [Socket](https://socket.dev), and [Phylum](https://phylum.io) for proving the model and pushing the field forward.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
+
+<sub>guardep is not affiliated with, endorsed by, or sponsored by any of the projects or vendors named above.</sub>

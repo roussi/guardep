@@ -25,7 +25,7 @@ crates/
 - **No emojis in code, docs, or commit messages** unless the user
   explicitly asks.
 - **Comments only when WHY is non-obvious.** No restating the code in
-  English. No "// added for X" or "// used by Y" — those rot.
+  English. No "// added for X" or "// used by Y" - those rot.
 - **Tests live with code.** `#[cfg(test)] mod tests { ... }` at the
   bottom of the file. Integration tests in `crates/*/tests/`.
 - **No new dependency without justification.** Workspace deps are
@@ -62,24 +62,24 @@ Allowlists are checked first in `decide_action(policy, finding)`. The CLI's
 `--severity` overrides `policy.min_display_severity` per-invocation. Action
 mapping is by kind:
 
-- `Malware`/`Vulnerability` → `malware`/`{critical,high,medium,low}_cve` knob
-- `PostinstallScript` → `postinstall_{default,suspicious,critical}` knob
-- `RiskScore` → composite score thresholds (`block_if_risk_score_above`,
+- `Malware`/`Vulnerability` -> `malware`/`{critical,high,medium,low}_cve` knob
+- `PostinstallScript` -> `postinstall_{default,suspicious,critical}` knob
+- `RiskScore` -> composite score thresholds (`block_if_risk_score_above`,
   `warn_if_risk_score_above`)
-- `MissingProvenance`/`ProvenanceMismatch` → `missing_provenance` /
+- `MissingProvenance`/`ProvenanceMismatch` -> `missing_provenance` /
   `provenance_mismatch` knob
 
 ## Resolvers
 
 `Resolver::resolve(project_root) -> Vec<PackageRef>`. Implementations:
 
-- `NpmLockResolver` — reads `package-lock.json` (v2/v3).
-- `NpmDryRunResolver` — copies `package.json` (+ existing lock + `.npmrc`)
+- `NpmLockResolver` - reads `package-lock.json` (v2/v3).
+- `NpmDryRunResolver` - copies `package.json` (+ existing lock + `.npmrc`)
   to a `tempfile::tempdir()`, runs `npm install --package-lock-only
   --ignore-scripts` there with PATH scrubbed of `~/.guardep/bin`, parses
   the resulting lockfile via `NpmLockResolver`. Used by the shim when
   the user's lockfile is stale w.r.t. `npm install foo`.
-- `MavenTreeResolver` — `mvn dependency:tree` → tgf parser.
+- `MavenTreeResolver` - `mvn dependency:tree` -> tgf parser.
 
 **Always scrub `~/.guardep/bin` from `PATH`** before spawning `npm`/`mvn`
 in resolver code. Otherwise the shim re-enters itself and recurses.
@@ -89,7 +89,7 @@ Helper: `scrub_shim_from_path()` in `core/src/resolver.rs`.
 
 `crates/guardep-cli/src/main.rs` checks `argv[0]` first. If basename is
 `npm`/`pnpm`/`yarn`, it routes to `shim::run` instead of clap.
-`install-shims` writes symlinks to `~/.guardep/bin/{npm,pnpm,yarn}` →
+`install-shims` writes symlinks to `~/.guardep/bin/{npm,pnpm,yarn}` ->
 `target/release/guardep` and injects `PATH=$HOME/.guardep/bin:$PATH`
 into shell rc files (zsh/bash/fish/PowerShell), bracketed by
 `# >>> guardep-shim >>>` ... `# <<< guardep-shim <<<` markers so
@@ -101,7 +101,7 @@ Tty prompt before injection unless `--yes` or non-tty stdin.
 ## Risk-score composition (Socket-style)
 
 `intel.rs` adds weighted reasons to a 0-100 composite. Severity buckets:
-≥80 Critical, ≥60 High, ≥40 Medium, ≥20 Low. Reason weights:
+>=80 Critical, >=60 High, >=40 Medium, >=20 Low. Reason weights:
 
 ```
 typosquat            30
@@ -118,10 +118,10 @@ filters it out by default.
 
 ## CLI conventions
 
-- `--severity {info,low,medium,high,critical}` — display threshold.
-- `--fail-on {never,warn,block}` — exit-code threshold (separate from display).
-- `-v`/`--verbose` (global) — bumps tracing filter from `warn` to `debug`.
-- `--yes`/`-y` — skip interactive confirmation prompts (CI-friendly).
+- `--severity {info,low,medium,high,critical}` - display threshold.
+- `--fail-on {never,warn,block}` - exit-code threshold (separate from display).
+- `-v`/`--verbose` (global) - bumps tracing filter from `warn` to `debug`.
+- `--yes`/`-y` - skip interactive confirmation prompts (CI-friendly).
 - Outputs honour `NO_COLOR` / `CLICOLOR_FORCE` / non-tty stdout via
   `init_color_support` in `main.rs`.
 
