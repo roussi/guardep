@@ -363,8 +363,14 @@ impl Evaluator for ProvenanceEvaluator {
             return Ok(Vec::new());
         }
 
-        // Initialise the trust root once for the whole audit (best-effort).
+        // Initialise the trust root once for the whole audit. None means
+        // init failed (offline, TUF outage, corporate proxy). We fall
+        // back to identity-only checks but ALSO emit a single high-
+        // visibility finding so the user knows crypto wasn't running.
+        // Silently degrading to presence-only is exactly the kind of
+        // false-confidence the rest of the project tries to avoid.
         let verifier = self.ensure_verifier().await;
+        let trust_root_available = verifier.is_some();
 
         // Phase 1: cache lookup.
         let mut from_cache: Vec<(PackageRef, CacheEntry)> = Vec::new();
@@ -400,6 +406,16 @@ impl Evaluator for ProvenanceEvaluator {
         let mut findings = Vec::new();
         for (pkg, entry) in from_cache.into_iter().chain(fetched.into_iter()) {
             findings.extend(self.entry_to_findings(&pkg, &entry));
+        }
+
+        // Loud signal when crypto verification was skipped wholesale.
+        // We attach it to the first target so it surfaces in the
+        // package-grouped report; the user can see precisely how many
+        // packages were affected via `details.affected_packages`.
+        if !trust_root_available {
+            if let Some(first) = targets.first() {
+                findings.push(trust_root_unavailable_finding(first, targets.len()));
+            }
         }
         Ok(findings)
     }
@@ -555,6 +571,31 @@ impl CacheEntry {
             crypto_verified: false,
             crypto_error: None,
         }
+    }
+}
+
+/// Surfaced when the Sigstore trust root could not be initialised
+/// (offline, TUF mirror outage, corporate proxy). Identity-only
+/// fallback ran but cryptographic verification did not — the user
+/// should know.
+fn trust_root_unavailable_finding(pkg: &PackageRef, affected: usize) -> Finding {
+    Finding {
+        package: pkg.clone(),
+        kind: FindingKind::MissingProvenance,
+        id: "provenance:trust-root-unavailable".to_string(),
+        aliases: vec![],
+        summary: format!(
+            "Sigstore trust root unavailable; {} package(s) checked with identity only, NOT crypto-verified",
+            affected
+        ),
+        severity: FindingSeverity::Medium,
+        fixed_versions: vec![],
+        references: vec!["https://docs.sigstore.dev/about/overview/".into()],
+        details: serde_json::json!({
+            "reason": "trust_root_init_failed",
+            "affected_packages": affected,
+            "remediation": "check network access to sigstore TUF mirror, or set GUARDEP_LOG=info for the underlying error"
+        }),
     }
 }
 

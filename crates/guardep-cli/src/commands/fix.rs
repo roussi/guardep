@@ -50,26 +50,24 @@ impl PackageManager {
         }
     }
 
-    fn install_cmd(self, name: &str, version: &str) -> Vec<String> {
-        match self {
-            // npm install pkg@^x.y.z saves to package.json AND updates
-            // the lockfile to that exact range.
-            Self::Npm => vec![
-                "npm".into(),
-                "install".into(),
-                format!("{name}@^{version}"),
-            ],
-            Self::Pnpm => vec![
-                "pnpm".into(),
-                "add".into(),
-                format!("{name}@^{version}"),
-            ],
-            Self::Yarn => vec![
-                "yarn".into(),
-                "add".into(),
-                format!("{name}@^{version}"),
-            ],
-        }
+    /// Build a single install command that applies every upgrade in
+    /// one transaction. npm/pnpm/yarn all support multiple specs in
+    /// one invocation. Either all bumps land or the package manager
+    /// fails atomically — no half-applied state, no divergent
+    /// lockfile.
+    fn install_all_cmd(self, upgrades: &[Upgrade]) -> Vec<String> {
+        let specs: Vec<String> = upgrades
+            .iter()
+            .map(|u| format!("{}@^{}", u.name, u.target_version))
+            .collect();
+        let (bin, sub) = match self {
+            Self::Npm => ("npm", "install"),
+            Self::Pnpm => ("pnpm", "add"),
+            Self::Yarn => ("yarn", "add"),
+        };
+        let mut cmd = vec![bin.to_string(), sub.to_string()];
+        cmd.extend(specs);
+        cmd
     }
 }
 
@@ -91,15 +89,16 @@ pub async fn run(path: &Path, target: FixTarget, apply: bool, yes: bool) -> Resu
             return Ok(());
         }
         eprintln!(
-            "\n{} applying {} upgrade(s) via {:?}",
+            "\n{} applying {} upgrade(s) atomically via {:?}",
             ">".cyan(),
             plan.upgrades.len(),
             pm
         );
-        for upg in &plan.upgrades {
-            let cmd = pm.install_cmd(&upg.name, &upg.target_version);
-            run_command(path, &cmd)?;
-        }
+        // Single invocation for all upgrades. Either every spec lands
+        // or the package manager fails atomically and the lockfile is
+        // unchanged. No half-applied state to recover from.
+        let cmd = pm.install_all_cmd(&plan.upgrades);
+        run_command(path, &cmd)?;
         eprintln!("\n{} done.", "OK".green().bold());
     } else if !plan.upgrades.is_empty() {
         eprintln!(
@@ -389,15 +388,43 @@ mod tests {
         assert_eq!(plan.manual[0].kind, FindingKind::PostinstallScript);
     }
 
-    #[test]
-    fn npm_install_command_is_caret_prefixed() {
-        let cmd = PackageManager::Npm.install_cmd("axios", "1.15.2");
-        assert_eq!(cmd, vec!["npm", "install", "axios@^1.15.2"]);
+    fn upg(name: &str, version: &str) -> Upgrade {
+        Upgrade {
+            name: name.into(),
+            current_version: "0.0.0".into(),
+            target_version: version.into(),
+            clears: "1/1".into(),
+        }
     }
 
     #[test]
-    fn pnpm_install_command() {
-        let cmd = PackageManager::Pnpm.install_cmd("axios", "1.15.2");
+    fn npm_install_all_is_atomic_single_invocation() {
+        let cmd = PackageManager::Npm.install_all_cmd(&[
+            upg("axios", "1.15.2"),
+            upg("lodash", "4.18.0"),
+        ]);
+        assert_eq!(
+            cmd,
+            vec![
+                "npm",
+                "install",
+                "axios@^1.15.2",
+                "lodash@^4.18.0",
+            ]
+        );
+    }
+
+    #[test]
+    fn pnpm_install_all_is_atomic_single_invocation() {
+        let cmd = PackageManager::Pnpm.install_all_cmd(&[upg("axios", "1.15.2")]);
         assert_eq!(cmd, vec!["pnpm", "add", "axios@^1.15.2"]);
+    }
+
+    #[test]
+    fn install_all_handles_empty_upgrades() {
+        let cmd = PackageManager::Yarn.install_all_cmd(&[]);
+        assert_eq!(cmd, vec!["yarn", "add"]);
+        // Caller is responsible for not invoking when empty; this just
+        // verifies the function doesn't panic.
     }
 }

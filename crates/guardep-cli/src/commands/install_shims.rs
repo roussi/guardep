@@ -2,7 +2,12 @@ use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use std::path::PathBuf;
 
-const TOOLS: &[&str] = &["npm", "pnpm", "yarn", "mvn", "gradle"];
+// Only tools that have a real pre-install gate. mvn/gradle are
+// intentionally NOT here: a passthrough shim creates false confidence
+// that guardep is auditing those invocations when it isn't. When a
+// Maven or Gradle shim lands, add the binary names back AND wire
+// them into shim/mod.rs::detect_invocation.
+const TOOLS: &[&str] = &["npm", "pnpm", "yarn"];
 
 pub fn shim_dir() -> Result<PathBuf> {
     let home = directories::BaseDirs::new()
