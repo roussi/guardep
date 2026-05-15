@@ -16,7 +16,7 @@
 | OSV.dev advisory matching             | Works. Batch endpoint, SQLite cache, semver range matching, per-major fix selection.       |
 | Postinstall script heuristic          | Works as a string-match heuristic, not AST analysis. ~10 rules, scored 0-100.              |
 | npm registry risk scoring             | Works. Maintainer count, version count, fresh-publish, abandonment, typosquat detection.   |
-| Sigstore provenance                   | **Presence + identity check only.** Does NOT yet verify cert chain, Rekor proof, DSSE sig. |
+| Sigstore provenance                   | Presence + identity + **full crypto verification** (Fulcio cert chain, DSSE signature, SCT). Falls back to presence + identity when the trust root cannot be initialised (offline). Rekor inclusion proof check is not yet implemented (TODO upstream in `sigstore-rs`). |
 | Pre-install gate (`npm ci`)           | Works when invoked through the shim AND lockfile is up-to-date.                            |
 | Pre-install gate (`npm install foo`)  | **Limited.** Currently reads existing lockfile, so brand-new packages bypass until lockfile updates. See "Threat model" below. |
 | Maven / Gradle                        | Not implemented. Shim passes through.                                                      |
@@ -148,7 +148,7 @@ guardep does **not** currently defend against:
 - **Bypass via absolute path.** `/usr/local/bin/npm` skips the shim entirely.
 - **`--no-package-lock`.** Without a lockfile, the shim runs npm first and audits after, which is exactly what we are trying to avoid. Mitigation: in-progress (true dry-run resolution).
 - **Yarn lockfiles, pre-pre-Berry.** Currently parses package-lock.json only.
-- **Forged Sigstore attestations.** We check presence and identity but do NOT yet verify the cryptographic signature, cert chain, or Rekor inclusion proof. An attacker who creates a syntactically valid attestation with a matching repository field bypasses the check.
+- **Forged Sigstore attestations.** We verify presence, identity, the Fulcio certificate chain, and the DSSE signature. We do NOT yet verify the Rekor inclusion proof (Merkle witness) — sigstore-rs has a TODO for this upstream. An attacker who can mint a valid Fulcio cert via a real GitHub Actions workflow with a matching repository identity could still bypass guardep, which is the same threat model as the upstream Sigstore tools.
 - **Zero-day malware not yet in OSV** that also passes the postinstall heuristic and risk scoring.
 - **Vulnerabilities in code your team writes.** Use SAST/DAST.
 - **Container base image vulnerabilities.** Use Trivy.
@@ -162,7 +162,7 @@ guardep does **not** currently defend against:
 | Malware-class policy         | no        | no          | indirect     | yes              | **yes**              |
 | Postinstall script analysis  | no        | no          | no           | yes (paid)       | **heuristic only**   |
 | Risk scoring                 | no        | no          | no           | yes (paid)       | **yes**              |
-| Provenance enforcement       | no        | no          | no           | partial          | **presence + identity (no crypto yet)** |
+| Provenance enforcement       | no        | no          | no           | partial          | **full crypto verification** |
 | Open source                  | yes       | yes         | yes          | no               | **yes (MIT)**        |
 | Container / IaC scan         | no        | no          | yes          | no               | no                   |
 
@@ -170,7 +170,8 @@ guardep does **not** currently defend against:
 
 - [ ] **True pre-install resolution.** Use `npm install --dry-run --json` to audit the *intended* graph instead of the existing lockfile. Eliminates the "new package bypasses audit" gap.
 - [ ] **AST-based postinstall analysis.** Replace regex heuristic with `swc_ecma_parser`. Real comment / string-literal awareness.
-- [ ] **Real Sigstore crypto verification.** Cert chain against Fulcio root, Rekor inclusion proof, DSSE signature.
+- [x] **Sigstore crypto verification.** Fulcio cert chain, DSSE signature, SCT, Identity policy bound to GitHub Actions OIDC issuer.
+- [ ] **Rekor inclusion proof.** Pending upstream support in `sigstore-rs`.
 - [ ] **Maven resolver.**
 - [ ] **Gradle resolver.**
 - [ ] **GitHub Action wrapper.**
