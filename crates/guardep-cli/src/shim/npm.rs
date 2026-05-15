@@ -1,10 +1,16 @@
 use crate::commands::audit;
 use crate::shim::{locate_real_binary, passthrough};
 use anyhow::Result;
+use guardep_core::resolver::{NpmDryRunResolver, Resolver};
 use owo_colors::OwoColorize;
 use std::path::PathBuf;
 
 const INTERCEPTED: &[&str] = &["install", "i", "add", "ci", "update", "upgrade"];
+
+/// Subcommands for which a dry-run is required to capture packages
+/// not yet in the lockfile (e.g. `npm install foo`). For `npm ci`
+/// the lockfile is authoritative by definition.
+const NEEDS_DRY_RUN: &[&str] = &["install", "i", "add", "update", "upgrade"];
 
 pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
     let subcommand = args.iter().find(|a| !a.starts_with('-')).map(|s| s.as_str());
@@ -17,25 +23,92 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
         return passthrough(tool, args);
     }
 
-    eprintln!("{} guardep: pre-install audit ({tool} {})", "→".cyan(), subcommand.unwrap_or(""));
+    eprintln!(
+        "{} guardep: pre-install audit ({tool} {})",
+        ">".cyan(),
+        subcommand.unwrap_or("")
+    );
 
     let project_root = std::env::current_dir()?;
     let lock_path = project_root.join("package-lock.json");
-    if !lock_path.exists() {
+
+    // Detect explicit --no-package-lock flag (npm) — refuse to gate.
+    if args.iter().any(|a| a == "--no-package-lock") {
         eprintln!(
-            "{} no package-lock.json — running install then post-audit",
-            "!".yellow()
+            "{} --no-package-lock disables guardep's gate. Refusing to proceed.",
+            "X".red()
         );
-        run_real(tool, args)?;
-        return audit::run(&project_root, audit::Format::Table, false, false).await;
+        std::process::exit(5);
     }
 
-    let verdict = audit::evaluate_project(&project_root, false).await?;
+    // For `npm install foo`, the existing lockfile is stale w.r.t. the
+    // new package. Use a dry-run resolution that includes the intended
+    // additions. For `npm ci` the lockfile is authoritative.
+    let needs_dry_run = subcommand
+        .map(|s| NEEDS_DRY_RUN.contains(&s))
+        .unwrap_or(false);
+
+    let resolved = if needs_dry_run && tool == "npm" {
+        eprintln!(
+            "{} resolving via `npm install --dry-run` (captures intended additions)",
+            ">".cyan()
+        );
+        match NpmDryRunResolver::new(args.to_vec()).resolve(&project_root) {
+            Ok(pkgs) => Some(pkgs),
+            Err(e) => {
+                eprintln!("{} dry-run resolution failed: {e}", "!".yellow());
+                eprintln!(
+                    "{} falling back to existing lockfile audit (may miss new packages)",
+                    "i".cyan()
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if resolved.is_none() && !lock_path.exists() && !project_root.join("pnpm-lock.yaml").exists()
+        && !project_root.join("yarn.lock").exists()
+    {
+        eprintln!(
+            "{} no lockfile found in {}",
+            "X".red(),
+            project_root.display()
+        );
+        eprintln!(
+            "{} guardep requires a lockfile to pre-audit. Run:",
+            "i".cyan()
+        );
+        eprintln!("    npm install --package-lock-only");
+        std::process::exit(3);
+    }
+
+    let verdict_result = match resolved {
+        Some(packages) => audit::evaluate_packages(&project_root, packages, false).await,
+        None => audit::evaluate_project(&project_root, false).await,
+    };
+
+    let verdict = match verdict_result {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{} guardep audit failed: {e}", "!".yellow());
+            eprintln!(
+                "{} proceeding with install (fail-open). Set GUARDEP_STRICT=1 to fail closed.",
+                "i".cyan()
+            );
+            if std::env::var("GUARDEP_STRICT").ok().as_deref() == Some("1") {
+                std::process::exit(4);
+            }
+            return run_real(tool, args);
+        }
+    };
+
     if verdict.should_block() {
         crate::report::print_verdict(&verdict, false);
         eprintln!(
             "\n{} {} install blocked by guardep policy",
-            "✗".red().bold(),
+            "X".red().bold(),
             tool.bold()
         );
         std::process::exit(2);

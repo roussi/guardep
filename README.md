@@ -1,74 +1,32 @@
 # guardep
 
-> **OSV-Scanner with teeth.** Block compromised installs across **npm / maven / gradle** before `postinstall` runs.
+> Deterministic supply-chain audit and pre-install gate for **npm / pnpm / yarn**, with optional **maven / gradle** support coming.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Status: MVP](https://img.shields.io/badge/Status-MVP-yellow.svg)]()
 
----
+`guardep` audits a JavaScript project's resolved dependency graph against four finding sources (OSV.dev, npm registry intel, install scripts, Sigstore provenance) and refuses to forward to the real package manager when policy is violated. It is meant to sit between you and `npm install`, not to scan after the fact.
 
-`guardep` is a transparent shim for `npm`, `pnpm`, `yarn`, `mvn`, and `gradle` that resolves your dependency graph against multiple finding sources and refuses to install compromised packages, *before* any `postinstall` script gets a chance to run.
+## What it actually does today (be honest)
 
-When the next Shai-Hulud-style worm hits, `npm install` should refuse to proceed. Not warn. Not log. **Refuse.**
-
-```bash
-$ npm install
-> guardep: pre-install audit (npm install)
-> resolved 759 packages
-[X] chalk@5.6.1                GHSA-xxxx-xxxx-xxxx   MALWARE   Critical   BLOCK
-[X] npm install blocked by guardep policy
-```
-
----
+| Capability                            | Status                                                                                     |
+| ------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Audit existing lockfile               | Works. npm/pnpm/yarn lockfiles parsed, four evaluators run in parallel.                    |
+| OSV.dev advisory matching             | Works. Batch endpoint, SQLite cache, semver range matching, per-major fix selection.       |
+| Postinstall script heuristic          | Works as a string-match heuristic, not AST analysis. ~10 rules, scored 0-100.              |
+| npm registry risk scoring             | Works. Maintainer count, version count, fresh-publish, abandonment, typosquat detection.   |
+| Sigstore provenance                   | **Presence + identity check only.** Does NOT yet verify cert chain, Rekor proof, DSSE sig. |
+| Pre-install gate (`npm ci`)           | Works when invoked through the shim AND lockfile is up-to-date.                            |
+| Pre-install gate (`npm install foo`)  | **Limited.** Currently reads existing lockfile, so brand-new packages bypass until lockfile updates. See "Threat model" below. |
+| Maven / Gradle                        | Not implemented. Shim passes through.                                                      |
+| Bypass via `/usr/local/bin/npm`       | **Possible.** PATH-based shim is not airtight.                                             |
 
 ## Why this exists
 
-`npm audit`, Trivy, OSV-Scanner are all great. All run **after** the package is on disk and `postinstall` has executed. By then a compromised package has already exfiltrated your `~/.npmrc`, your `~/.aws/credentials`, your CI secrets, and republished itself to other packages you maintain.
+`npm audit`, Trivy, OSV-Scanner all run **after** the package is on disk and `postinstall` has executed. By then a compromised package has already had its `postinstall` hook fire. The 2025 Shai-Hulud worm and the April 2026 Mini Shai-Hulud TanStack/SAP/axios compromises both worked because that window stays open.
 
-The 2025 **Shai-Hulud worm** and the April 2026 **Mini Shai-Hulud TanStack/SAP/axios** compromises both worked because that window stays open. `guardep` closes it.
-
-|                            | Scanner (Trivy / OSV-Scanner / `npm audit`) | guardep                  |
-| -------------------------- | ------------------------------------------- | ------------------------ |
-| When does it run?          | After install                               | **Before install**       |
-| `postinstall` already ran? | Yes, damage done                            | No, gate intercepts      |
-| Workflow change?           | New command (`trivy fs .`)                  | None, just `npm install` |
-| Threat focus               | CVE severity                                | **Malware-first** policy |
-| Decision model             | Report                                      | **Block / warn / allow** |
-
----
-
-## Features
-
-### Defenses (multiple finding sources)
-
-guardep runs several **evaluators** in parallel against your resolved dependency graph. Each one produces findings that the policy engine combines and gates on.
-
-| Evaluator           | What it catches                                                                                                                              | Status      |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| **OSV advisories**  | Known CVEs and malware records across npm/Maven/cargo/PyPI                                                                                   | shipped     |
-| **Postinstall**     | Suspicious or known-bad `preinstall` / `install` / `postinstall` scripts via heuristic detector (network calls, cred reads, base64+eval, etc) | shipped     |
-| **Risk score**      | Single-maintainer packages, fresh publishes, abandoned packages, typosquats (Levenshtein vs top-30 npm packages), missing source repo        | shipped     |
-| **Provenance**      | Missing or mismatched npm Sigstore provenance attestations for packages flagged in policy                                                    | shipped     |
-| **Maven resolver**  | `mvn dependency:tree` parsing, run advisory matching against full transitive graph                                                           | roadmap     |
-| **Gradle resolver** | Tooling API or dependency-locking plugin                                                                                                     | roadmap     |
-
-### Engine
-
-- **Drop-in shim** that symlinks `npm`/`pnpm`/`yarn`/`mvn`/`gradle` via PATH. Zero workflow change.
-- **Pre-install gate** audits the resolved dependency graph before forwarding to the real binary. Blocks on policy violation, exits non-zero.
-- **Unified Finding model**: vulnerability, malware, postinstall script, risk score, missing provenance, provenance mismatch. All routed through one policy engine.
-- **Parallel evaluator registry** runs every enabled finding source concurrently, isolating failures (one evaluator failing does not kill the audit).
-- **OSV.dev backend** unifies GHSA, NVD, RUSTSEC, PYSEC, MAL-* across npm / Maven / cargo / PyPI.
-- **Smart batching** via `/v1/querybatch` (1000 pkgs/call). Full audit of a 759-package project: ~20s cold, ~25ms cached.
-- **Per-evaluator SQLite cache** with TTL configurable via policy.
-- **Actionable upgrades**: `Min` (cheapest patch) vs `Safe` (clears all CVEs). Counts shown: `1.13.5 (1/5)` vs `1.15.2 (5/5)`.
-- **Cross-major detection** flags when no in-major fix exists and a breaking change is required.
-- **Allowlist escape hatch** (blanket `pkg@version` or surgical per-finding-id).
-- **JSON output** for CI, dashboards, SARIF conversion.
-- **Single static binary**, Rust, ~5MB, no runtime deps.
-
----
+guardep tries to close it for the most common path (`npm install` with an up-to-date lockfile, invoked through the shim).
 
 ## Install
 
@@ -77,50 +35,24 @@ git clone https://github.com/aroussi/guardep
 cd guardep
 cargo build --release
 
-# Audit a project (read-only)
 ./target/release/guardep audit --path ./my-project
 
-# Install shims globally (creates ~/.guardep/bin/{npm,pnpm,yarn,mvn,gradle})
+# Install shims (creates ~/.guardep/bin/{npm,pnpm,yarn,mvn,gradle})
 ./target/release/guardep install-shims
 export PATH="$HOME/.guardep/bin:$PATH"
 ```
 
-> Add the `export PATH=...` line to your shell rc to make it permanent.
-
----
-
-## Usage
+## Use
 
 ### Audit a project
 
 ```bash
 guardep audit --path ./frontend
-guardep audit --path ./frontend --collapse              # one row per package
-guardep audit --path ./frontend --collapse --format json
+guardep audit --path ./frontend --collapse                 # one row per package
+guardep audit --path ./frontend --collapse --format json   # CI-friendly
+guardep audit --path ./frontend --info                     # surface info-tier signals
+guardep audit --path ./frontend --fail-on warn             # CI: exit 1 on warnings too
 ```
-
-**Sample output (collapsed):**
-
-```
-+---+-------------------------------+---+--------------+-------+----------+------------------+------------------+--------+
-|   | Package                       | # | Findings     | Class | Severity | Min              | Safe             | Action |
-+---+-------------------------------+---+--------------+-------+----------+------------------+------------------+--------+
-| ! | axios@1.13.2                  | 5 | GHSA-..., .. | CVE   | High     | 1.13.5 (1/5)     | 1.15.2 (5/5)     | WARN   |
-| ! | electron@39.2.6               | 5 | GHSA-..., .. | CVE   | High     | 39.8.0 (3/5)     | 39.8.1 (5/5)     | WARN   |
-| ! | tar@6.2.1                     | 6 | GHSA-..., .. | CVE   | High     | 7.5.3 (breaking) | 7.5.3 (breaking) | WARN   |
-| X | chalk@5.6.1                   | 1 | GHSA-...     | MALW. | Critical | 5.6.2 (1/1)      | 5.6.2 (1/1)      | BLOCK  |
-| X | loadsh@1.0.0                  | 1 | risk:typo... | RISK  | High     |                  |                  | BLOCK  |
-| X | evil-pkg@2.0.0                | 1 | script:po... | SCRIPT| Critical |                  |                  | BLOCK  |
-+---+-------------------------------+---+--------------+-------+----------+------------------+------------------+--------+
-
-[X] 3 block(s), 16 warning(s), 1 malware finding(s) across 19 unique findings, 14 affected packages (98 raw)
-```
-
-Read the columns:
-
-- **`#`**: number of findings matched against this `pkg@version`
-- **`Min`**: smallest in-major bump and how many findings it clears (`1/5` = clears 1 of 5). Empty for non-version-fixable findings (script, risk).
-- **`Safe`**: smallest in-major bump that clears **all** matched findings. `breaking` if a major upgrade is required.
 
 ### Use as a shim
 
@@ -129,193 +61,121 @@ guardep install-shims
 export PATH="$HOME/.guardep/bin:$PATH"
 
 cd ./my-project
-npm install      # audited first; blocked if malware/critical
-pnpm add lodash  # audited
+npm install      # audited; blocks if malware/critical
+pnpm install     # audited
 yarn install     # audited
 ```
 
-When the audit blocks, exit code is `2`. When clean, the real `npm`'s exit code is propagated.
+Exit codes:
+- `0`: clean
+- `1`: warnings (only when `--fail-on warn`)
+- `2`: blocks (default fail level)
+- Other non-zero: real package manager exit code passed through
 
 ### CI / JSON
 
 ```bash
-guardep audit --path . --collapse --format json | tee guardep.json
+guardep audit --path . --collapse --format json --fail-on warn | tee guardep.json
 jq '.summary' guardep.json
 ```
 
----
-
 ## Configuration
 
-Drop a `guardep.toml` at your project root:
+Drop `guardep.toml` at your project root:
 
 ```toml
 [policy]
-# === OSV advisory policy ===
+# OSV advisory policy
 malware       = "block"
 critical_cve  = "block"
 high_cve      = "warn"
 medium_cve    = "allow"
 low_cve       = "allow"
 
-# === Postinstall script policy ===
-postinstall_default    = "warn"     # benign-looking script (score 0)
-postinstall_suspicious = "block"    # heuristic flagged risky patterns
-postinstall_critical   = "block"    # clear malware pattern (always block)
-allowed_script_hashes  = [
-  # "abc123...",   # pre-approved sha256 hash of a known-good script
-]
+# Postinstall script policy
+postinstall_default    = "allow"   # score-0 scripts (most installs)
+postinstall_suspicious = "block"
+postinstall_critical   = "block"
+allowed_script_hashes  = []        # SHA-256 of pre-approved scripts
 
-# === Risk scoring policy ===
+# Risk scoring policy
 block_if_risk_score_above  = 85
 warn_if_risk_score_above   = 60
 warn_if_unmaintained_days  = 730
 warn_if_fresh_publish_days = 7
 block_typosquats           = true
+report_single_maintainer   = false   # surface as Info when true
 
-# === Provenance policy ===
+# Provenance policy (presence + identity check only)
 require_provenance   = []           # globs: ["@*/*", "chalk", "react"]
 missing_provenance   = "block"
 provenance_mismatch  = "block"
 
-# === Cache TTL (hours) ===
+# Cache TTL (hours)
 cache_refresh_hours = 6
 
-# === Allowlists ===
-allowlist = [
-  # "axios@1.13.2",   # blanket suppress all findings on this pkg@version
-]
-
-[policy.finding_allowlist]
-# surgical: suppress one specific finding ID for one pkg@version
+# Allowlists
+allowlist = []                                # blanket: "axios@1.13.2"
+[policy.finding_allowlist]                    # surgical
 # "axios@1.13.2" = ["GHSA-43fc-jf86-j433"]
 ```
-
-`Action` precedence: `block` > `warn` > `allow`. Allowlist downgrades to `allow` regardless of class.
-
----
 
 ## Architecture
 
 ```
 crates/
-  guardep-core/        Finding model, Evaluator trait, EvaluatorRegistry,
-                       OSV client, Postinstall heuristic detector,
-                       npm registry intel scoring, Sigstore provenance
-                       verifier, SQLite caches, semver matcher,
-                       policy engine, lockfile resolvers
-  guardep-cli/         Binary + shim dispatch (busybox argv0 pattern) +
-                       commands (audit, install-shims, info)
+  guardep-core/   Finding model, Evaluator trait, EvaluatorRegistry,
+                  OSV / Postinstall / Intel / Provenance evaluators,
+                  SQLite cache, semver matcher, policy engine,
+                  lockfile resolvers
+  guardep-cli/    Binary + shim dispatch (busybox argv0 pattern) +
+                  commands (audit, install-shims, info, fix)
 ```
 
-**Argv0 dispatch:** one binary, multiple symlinks. The shim inspects `argv[0]` to know whether it was invoked as `npm`, `mvn`, etc., and routes accordingly. Original tool is located via PATH (excluding the shim dir to avoid recursion) and forwarded to.
+All four evaluators implement one trait and run concurrently. Findings are merged, deduped, and rendered together.
 
-**Decision flow:**
+## Threat model (be honest)
 
-```
-user > npm install > ~/.guardep/bin/npm (shim)
-                         |
-                         + parse subcommand
-                         + if not install-class -> passthrough
-                         + resolve package-lock.json
-                         + run all enabled evaluators in parallel:
-                         |    OsvEvaluator (cache + batch fetch)
-                         |    PostinstallEvaluator (read scripts, score)
-                         |    IntelEvaluator (npm registry, risk score)
-                         |    ProvenanceEvaluator (Sigstore attestations)
-                         + merge findings, apply policy, dedup
-                         |
-                         + block? -> exit 2, no install
-                         + allow/warn -> exec real npm
-```
+guardep is intended to defend against:
+- **Compromised package publishes** that depend on a `postinstall` hook firing
+- **Known CVEs** in dependencies, gated by severity per policy
+- **Suspicious install scripts**, via heuristic scoring of script bodies
+- **Typosquats** of popular packages, with reputation cross-check to suppress legit lookalikes
+- **Missing or mismatched provenance** for packages flagged in policy
 
-**Evaluator extension point.** All finding sources implement one trait:
-
-```rust
-#[async_trait]
-pub trait Evaluator: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn enabled(&self, policy: &Policy) -> bool;
-    async fn evaluate(&self, packages: &[PackageRef], policy: &Policy)
-        -> anyhow::Result<Vec<Finding>>;
-}
-```
-
-Adding a new finding source (Socket.dev feed, internal vuln intel, custom rules) is a single file plus one line in the registry.
-
----
-
-## Roadmap
-
-- [x] npm shim (resolve `package-lock.json`, batch OSV, block on malware)
-- [x] OSV batch endpoint + SQLite cache + dedup + collapse + Min/Safe targets
-- [x] Policy engine + allowlist + JSON output
-- [x] Evaluator trait + parallel registry + unified Finding model
-- [x] Postinstall script heuristic detector
-- [x] npm registry risk scoring + typosquat detection
-- [x] Sigstore provenance presence + identity check
-- [ ] Full Sigstore cryptographic verification (cert chain, Rekor proof)
-- [ ] **Maven resolver** (`mvn dependency:tree -DoutputType=json`)
-- [ ] **Gradle resolver** (Tooling API or `dependency-locking` plugin)
-- [ ] GitHub Advisory DB + Socket.dev as secondary sources (faster malware signal)
-- [ ] OSV bulk-dump mode (offline / air-gapped CI)
-- [ ] **GitHub Action** wrapper
-- [ ] **SARIF output** for code-scanning UIs
-- [ ] `--dry-run` mode that resolves the intended install graph without lockfile
-- [ ] Lockfile diff mode (`audit-diff --base main --head feature`)
-
----
+guardep does **not** currently defend against:
+- **Targeted attacks against guardep itself.** A malicious shell rc, modified shim binary, or PATH manipulation defeats it.
+- **Bypass via absolute path.** `/usr/local/bin/npm` skips the shim entirely.
+- **`--no-package-lock`.** Without a lockfile, the shim runs npm first and audits after, which is exactly what we are trying to avoid. Mitigation: in-progress (true dry-run resolution).
+- **Yarn lockfiles, pre-pre-Berry.** Currently parses package-lock.json only.
+- **Forged Sigstore attestations.** We check presence and identity but do NOT yet verify the cryptographic signature, cert chain, or Rekor inclusion proof. An attacker who creates a syntactically valid attestation with a matching repository field bypasses the check.
+- **Zero-day malware not yet in OSV** that also passes the postinstall heuristic and risk scoring.
+- **Vulnerabilities in code your team writes.** Use SAST/DAST.
+- **Container base image vulnerabilities.** Use Trivy.
 
 ## How it compares
 
-|                         | Trivy        | OSV-Scanner | npm audit | Socket / Phylum  | Aegis        | **guardep**          |
-| ----------------------- | ------------ | ----------- | --------- | ---------------- | ------------ | -------------------- |
-| Pre-install gate        | no           | no          | no        | yes (paid)       | yes          | **yes**              |
-| Multi-ecosystem shim    | n/a (scan)   | no          | no        | partial          | OS-wide      | **npm/mvn/gradle**   |
-| Malware-class policy    | indirect     | no          | no        | yes              | n/a          | **yes**              |
-| Postinstall analysis    | no           | no          | no        | yes (paid)       | yes (LLM)    | **yes (heuristic)**  |
-| Risk scoring            | no           | no          | no        | yes (paid)       | n/a          | **yes**              |
-| Provenance enforcement  | no           | no          | no        | partial          | n/a          | **yes**              |
-| Open source             | yes          | yes         | yes       | no               | yes          | **yes (MIT)**        |
-| Container / IaC scan    | yes          | no          | no        | no               | no           | no (out of scope)    |
-| OSV-backed              | partial      | yes         | no        | proprietary      | n/a          | **yes**              |
-| Cryptographic audit log | no           | no          | no        | no               | yes          | no (roadmap)         |
+|                              | npm audit | OSV-Scanner | Trivy        | Socket / Phylum  | **guardep**          |
+| ---------------------------- | --------- | ----------- | ------------ | ---------------- | -------------------- |
+| Pre-install gate             | no        | no          | no           | yes (paid)       | **partial (npm/pnpm/yarn lockfile)** |
+| Multi-source intel           | partial   | no          | no           | yes              | **yes**              |
+| Malware-class policy         | no        | no          | indirect     | yes              | **yes**              |
+| Postinstall script analysis  | no        | no          | no           | yes (paid)       | **heuristic only**   |
+| Risk scoring                 | no        | no          | no           | yes (paid)       | **yes**              |
+| Provenance enforcement       | no        | no          | no           | partial          | **presence + identity (no crypto yet)** |
+| Open source                  | yes       | yes         | yes          | no               | **yes (MIT)**        |
+| Container / IaC scan         | no        | no          | yes          | no               | no                   |
 
-`guardep` is **not** a Trivy replacement and not an Aegis replacement. It sits between them: where Trivy reports and Aegis controls process execution, guardep gates the package supply chain.
+## Known limitations and roadmap
 
----
-
-## Limitations
-
-- **PATH bypass is possible.** A user (or attacker script) can call `/usr/local/bin/npm` directly and skip the shim. For hardened environments use a container image with the shim path baked in, or `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES` (not yet shipped).
-- **Lockfile-required.** The npm path reads `package-lock.json` rather than re-resolving from `package.json`. Run `npm install --package-lock-only` first if you don't have one.
-- **Maven/Gradle = passthrough today.** Resolvers are on the roadmap.
-- **Provenance verification is partial.** Today: presence check + identity match against package metadata. Not yet: full X.509 cert chain validation against Fulcio root, Rekor transparency log inclusion proof, DSSE signature verification. Defeats most current attacks but is not cryptographically airtight.
-- **Advisory DB lag.** OSV typically lags malware disclosures by 24-72h. The Postinstall and Risk evaluators help close this gap; adding Socket.dev feed will close more of it.
-- **Postinstall detector is heuristic.** False positives on legitimately-network-using install scripts (e.g. `node-gyp` rebuilds). Use `allowed_script_hashes` to whitelist known-good scripts.
-
----
-
-## Threat model
-
-`guardep` defends against:
-
-- **Compromised package publishes** (account hijacks, postinstall worms): classified as `Malware` and blocked before postinstall runs
-- **Known CVEs** in dependencies: gated on severity per policy
-- **Suspicious postinstall scripts**: heuristic detector scores network calls + cred reads + base64+eval patterns
-- **High-risk packages without CVEs**: single-maintainer, fresh-publish, abandoned, typosquat candidates
-- **Missing or mismatched provenance**: blocks publishes that did not come from the expected source repo
-- **Stale audits**: explicit TTL, supports fresh re-audit
-
-`guardep` does **not** defend against:
-
-- Targeted attacks where the attacker tampers with `guardep` itself or the OS PATH
-- Zero-day malware not yet in OSV that also slips past the postinstall heuristic and risk scoring
-- Vulnerabilities in code your team writes (use SAST/DAST for that)
-- Container base image vulnerabilities (use Trivy for that)
-- Process-level threats outside package managers (use Aegis or similar for that)
-
----
+- [ ] **True pre-install resolution.** Use `npm install --dry-run --json` to audit the *intended* graph instead of the existing lockfile. Eliminates the "new package bypasses audit" gap.
+- [ ] **AST-based postinstall analysis.** Replace regex heuristic with `swc_ecma_parser`. Real comment / string-literal awareness.
+- [ ] **Real Sigstore crypto verification.** Cert chain against Fulcio root, Rekor inclusion proof, DSSE signature.
+- [ ] **Maven resolver.**
+- [ ] **Gradle resolver.**
+- [ ] **GitHub Action wrapper.**
+- [ ] **SARIF output.**
+- [ ] **Cargo dist / Homebrew release pipeline.** Currently `cargo install` from source only.
 
 ## Development
 
@@ -324,39 +184,18 @@ cargo build
 cargo test
 cargo run -- audit --path /path/to/project --collapse
 
-# Bust caches to test fresh fetches
+# Bust caches to force fresh fetches
 rm -f ~/Library/Caches/dev.guardep.guardep/*.db    # macOS
 rm -f ~/.cache/guardep/*.db                         # Linux
 ```
 
-The test suite covers the matcher, fix-target selection (min vs safe vs cross-major fallback), policy decisions, allowlist overrides (blanket + per-finding), scoped package key parsing, CVSS severity bucketing, postinstall heuristic scoring, Levenshtein distance, typosquat detection with scoped-package skip, npm registry caching, Sigstore bundle parsing, URL normalization, and the parallel evaluator registry.
+## Acknowledgements
 
----
-
-## Contributing
-
-Issues and PRs welcome. Particularly looking for help on:
-
-- Maven dependency tree parsing (the JSON output of `mvn dependency:tree` is verbose; a tighter resolver would be ideal)
-- Gradle Tooling API integration
-- Real-world malware test fixtures (anonymized OSV records of historical Shai-Hulud / Qix / TanStack compromises)
-- SARIF output schema mapping
-- Full Sigstore cryptographic verification (Fulcio cert chain + Rekor inclusion proof)
-- Socket.dev free-tier feed integration
-
----
+- [OSV.dev](https://osv.dev/) for the unified advisory database
+- [GitHub Advisory Database](https://github.com/advisories)
+- [Sigstore](https://www.sigstore.dev/) and the npm provenance team
+- [Aqua Security Trivy](https://github.com/aquasecurity/trivy) and [OSV-Scanner](https://github.com/google/osv-scanner) for proving the model
 
 ## License
 
 MIT, see [LICENSE](LICENSE).
-
----
-
-## Acknowledgements
-
-- [OSV.dev](https://osv.dev/) for the unified advisory database that makes this possible
-- [GitHub Advisory Database](https://github.com/advisories) as the primary source for npm/Maven advisories
-- [Sigstore](https://www.sigstore.dev/) and the npm provenance team for shipping signed attestations
-- The [Aqua Security Trivy](https://github.com/aquasecurity/trivy) and [OSV-Scanner](https://github.com/google/osv-scanner) teams for proving the model and aggregating the data
-
-> *"npm audit tells you you've been robbed. guardep keeps the door shut."*

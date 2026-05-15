@@ -304,45 +304,59 @@ impl Evaluator for IntelEvaluator {
     }
 
     async fn evaluate(&self, packages: &[PackageRef], policy: &Policy) -> Result<Vec<Finding>> {
+        use futures::stream::{self, StreamExt};
+        const FETCH_CONCURRENCY: usize = 32;
+
         let cache = self.open_cache()?;
         let ttl = policy.cache_refresh_hours as i64;
-        let mut findings: Vec<Finding> = Vec::new();
 
+        // Phase 1: cache lookup — sequential, hits SQLite (fast).
+        let mut hits: Vec<(PackageRef, IntelSnapshot)> = Vec::new();
+        let mut misses: Vec<PackageRef> = Vec::new();
         for pkg in packages {
             if pkg.ecosystem != Ecosystem::Npm {
                 continue;
             }
-
-            let snap = match Self::cache_get(&cache, &pkg.name, ttl) {
-                Ok(Some(snap)) => snap,
-                Ok(None) => match self.fetch(&pkg.name).await {
-                    Ok(s) => {
-                        if let Err(e) = Self::cache_put(&cache, &pkg.name, &s) {
-                            tracing::warn!("intel cache put failed for {}: {e}", pkg.name);
-                        }
-                        s
-                    }
-                    Err(e) => {
-                        tracing::warn!("intel fetch failed for {}: {e}", pkg.name);
-                        continue;
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!("intel cache read failed for {}: {e}", pkg.name);
-                    continue;
-                }
-            };
-
-            // Per-version publish time: prefer cached snapshot if it matches
-            // the installed version; otherwise the snapshot only knows
-            // *some* version's publish time. We fall back to that.
-            let installed_published_at = snap.installed_published_at.clone();
-
-            if let Some(finding) = score_package(pkg, &snap, policy, installed_published_at) {
-                findings.push(finding);
+            match Self::cache_get(&cache, &pkg.name, ttl) {
+                Ok(Some(snap)) => hits.push((pkg.clone(), snap)),
+                Ok(None) => misses.push(pkg.clone()),
+                Err(e) => tracing::warn!("intel cache read failed for {}: {e}", pkg.name),
             }
         }
 
+        // Phase 2: parallel HTTP fetches for misses, bounded concurrency.
+        // 32 concurrent registry requests is well within polite limits and
+        // collapses ~700 sequential fetches from ~35s to ~1-2s.
+        let fetched: Vec<(PackageRef, IntelSnapshot)> = stream::iter(misses)
+            .map(|pkg| async move {
+                match self.fetch(&pkg.name).await {
+                    Ok(s) => Some((pkg, s)),
+                    Err(e) => {
+                        tracing::warn!("intel fetch failed for {}: {e}", pkg.name);
+                        None
+                    }
+                }
+            })
+            .buffer_unordered(FETCH_CONCURRENCY)
+            .filter_map(|opt| async move { opt })
+            .collect()
+            .await;
+
+        // Phase 3: write fetched snapshots back to cache.
+        for (pkg, snap) in &fetched {
+            if let Err(e) = Self::cache_put(&cache, &pkg.name, snap) {
+                tracing::warn!("intel cache put failed for {}: {e}", pkg.name);
+            }
+        }
+
+        // Phase 4: score everything.
+        let mut findings: Vec<Finding> = Vec::new();
+        for (pkg, snap) in hits.iter().chain(fetched.iter()) {
+            let installed_published_at = snap.installed_published_at.clone();
+            if let Some(f) = score_package(pkg, snap, policy, installed_published_at) {
+                findings.push(f);
+            }
+        }
         Ok(findings)
     }
 }

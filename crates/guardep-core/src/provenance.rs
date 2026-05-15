@@ -236,23 +236,40 @@ impl Evaluator for ProvenanceEvaluator {
         packages: &[PackageRef],
         policy: &Policy,
     ) -> Result<Vec<Finding>> {
-        let mut findings = Vec::new();
+        use futures::stream::{self, StreamExt};
+        const FETCH_CONCURRENCY: usize = 16;
+
         let ttl = policy.cache_refresh_hours;
 
-        for pkg in packages {
-            if pkg.ecosystem != Ecosystem::Npm {
-                continue;
-            }
-            if !policy.requires_provenance(&pkg.name) {
-                continue;
-            }
+        // Filter to packages that match policy + npm ecosystem.
+        let targets: Vec<&PackageRef> = packages
+            .iter()
+            .filter(|pkg| {
+                pkg.ecosystem == Ecosystem::Npm && policy.requires_provenance(&pkg.name)
+            })
+            .collect();
 
-            // Try cache first.
-            let cached = self.cache_get(&pkg.name, &pkg.version, ttl)?;
-            let (attested_repo, expected_repo) = if let Some(entry) = cached {
-                (entry.attested_repo, entry.expected_repo)
-            } else {
-                let attested = match self.fetch_attestation_repo(&pkg.name, &pkg.version).await {
+        // Phase 1: cache lookup.
+        let mut from_cache: Vec<(PackageRef, Option<String>, Option<String>)> = Vec::new();
+        let mut to_fetch: Vec<PackageRef> = Vec::new();
+        for pkg in &targets {
+            match self.cache_get(&pkg.name, &pkg.version, ttl)? {
+                Some(entry) => from_cache.push((
+                    (*pkg).clone(),
+                    entry.attested_repo,
+                    entry.expected_repo,
+                )),
+                None => to_fetch.push((*pkg).clone()),
+            }
+        }
+
+        // Phase 2: parallel fetches.
+        let fetched: Vec<(PackageRef, Option<String>, Option<String>)> = stream::iter(to_fetch)
+            .map(|pkg| async move {
+                let attested = match self
+                    .fetch_attestation_repo(&pkg.name, &pkg.version)
+                    .await
+                {
                     Ok(v) => v,
                     Err(e) => {
                         tracing::warn!(
@@ -260,11 +277,9 @@ impl Evaluator for ProvenanceEvaluator {
                             pkg.name,
                             pkg.version
                         );
-                        // Don't poison the cache on transient failures.
-                        continue;
+                        return None;
                     }
                 };
-
                 let expected = if attested.is_some() {
                     match self.fetch_expected_repo(&pkg.name).await {
                         Ok(v) => v,
@@ -273,26 +288,30 @@ impl Evaluator for ProvenanceEvaluator {
                                 "provenance: package metadata fetch failed for {}: {e}",
                                 pkg.name
                             );
-                            continue;
+                            return None;
                         }
                     }
                 } else {
                     None
                 };
+                Some((pkg, attested, expected))
+            })
+            .buffer_unordered(FETCH_CONCURRENCY)
+            .filter_map(|opt| async move { opt })
+            .collect()
+            .await;
 
-                let _ = self.cache_put(
-                    &pkg.name,
-                    &pkg.version,
-                    attested.as_deref(),
-                    expected.as_deref(),
-                );
-                (attested, expected)
-            };
+        // Phase 3: persist fetched results to cache.
+        for (pkg, attested, expected) in &fetched {
+            let _ = self.cache_put(&pkg.name, &pkg.version, attested.as_deref(), expected.as_deref());
+        }
 
+        // Phase 4: emit findings from both cache hits and fresh fetches.
+        let mut findings = Vec::new();
+        for (pkg, attested_repo, expected_repo) in from_cache.into_iter().chain(fetched.into_iter())
+        {
             match attested_repo {
-                None => {
-                    findings.push(missing_finding(pkg));
-                }
+                None => findings.push(missing_finding(&pkg)),
                 Some(attested) => {
                     let normalized_attested = normalize_repo(&attested);
                     let normalized_expected = expected_repo
@@ -303,7 +322,7 @@ impl Evaluator for ProvenanceEvaluator {
                         || normalized_attested != normalized_expected
                     {
                         findings.push(mismatch_finding(
-                            pkg,
+                            &pkg,
                             &attested,
                             expected_repo.as_deref().unwrap_or(""),
                         ));
@@ -311,7 +330,6 @@ impl Evaluator for ProvenanceEvaluator {
                 }
             }
         }
-
         Ok(findings)
     }
 }

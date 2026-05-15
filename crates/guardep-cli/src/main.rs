@@ -22,6 +22,23 @@ impl From<OutputFormat> for commands::audit::Format {
     }
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum FailOnArg {
+    Never,
+    Warn,
+    Block,
+}
+
+impl From<FailOnArg> for commands::audit::FailOn {
+    fn from(f: FailOnArg) -> Self {
+        match f {
+            FailOnArg::Never => commands::audit::FailOn::Never,
+            FailOnArg::Warn => commands::audit::FailOn::Warn,
+            FailOnArg::Block => commands::audit::FailOn::Block,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "guardep", version, about = "Block compromised dependencies before they install")]
 struct Cli {
@@ -45,6 +62,11 @@ enum Cmd {
         /// reporting all of them is noise.
         #[arg(long)]
         report_single_maintainer: bool,
+        /// Threshold above which the audit exits non-zero. `block`
+        /// (default): exit 2 on blocks. `warn`: exit 1 on warnings,
+        /// 2 on blocks. `never`: always exit 0 (informational).
+        #[arg(long, value_enum, default_value_t = FailOnArg::Block)]
+        fail_on: FailOnArg,
     },
     /// Install symlinks (npm/mvn/gradle) into ~/.guardep/bin.
     InstallShims {
@@ -78,8 +100,15 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Audit { path, format, collapse, report_single_maintainer } => {
-            commands::audit::run(&path, format.into(), collapse, report_single_maintainer).await
+        Cmd::Audit { path, format, collapse, report_single_maintainer, fail_on } => {
+            commands::audit::run(
+                &path,
+                format.into(),
+                collapse,
+                report_single_maintainer,
+                fail_on.into(),
+            )
+            .await
         }
         Cmd::InstallShims { force } => commands::install_shims::run(force),
         Cmd::Shim { tool, args } => shim::run(&tool, &args).await,
