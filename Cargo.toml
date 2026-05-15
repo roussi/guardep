@@ -23,7 +23,7 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 comfy-table = "7"
-owo-colors = "4"
+owo-colors = { version = "4", features = ["supports-colors"] }
 directories = "5"
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
@@ -39,3 +39,6 @@ swc_ecma_parser = "39"
 swc_ecma_ast = "23"
 swc_common = "21"
 swc_ecma_visit = "23"
+indicatif = "0.17"
+supports-color = "3"
+similar = "2"

@@ -29,6 +29,7 @@ swc_ecma_ast.workspace = true
 swc_common.workspace = true
 swc_ecma_visit.workspace = true
 tempfile.workspace = true
+indicatif.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true

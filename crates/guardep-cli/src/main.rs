@@ -151,8 +151,28 @@ enum Cmd {
     Cache(CacheCmd),
 }
 
+// Honour NO_COLOR / CLICOLOR_FORCE / non-tty stdout. Without this we
+// emit ANSI escapes into pipes (`guardep audit | tee log.txt`) and
+// non-color terminals.
+fn init_color_support() {
+    if std::env::var_os("NO_COLOR").is_some() {
+        owo_colors::set_override(false);
+        return;
+    }
+    if std::env::var_os("CLICOLOR_FORCE").is_some() {
+        owo_colors::set_override(true);
+        return;
+    }
+    let on = supports_color::on(supports_color::Stream::Stdout)
+        .map(|level| level.has_basic)
+        .unwrap_or(false);
+    owo_colors::set_override(on);
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_color_support();
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_env("GUARDEP_LOG").unwrap_or_else(|_| EnvFilter::new("warn")))
         .with_writer(std::io::stderr)

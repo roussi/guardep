@@ -24,9 +24,20 @@ pub fn prune(days: i64) -> Result<()> {
     // TTL here so we can immediately read stats afterwards.
     let cache = KvCache::open(&cache_db, 24)?;
     let stats_before = cache.stats()?;
-    let removed = cache.prune_older_than(days)?;
+
+    let spinner = indicatif::ProgressBar::new_spinner();
+    spinner.set_style(
+        indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
+            .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner()),
+    );
+    spinner.set_message(format!("pruning rows older than {days} days…"));
+    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+    let removed = cache.prune_older_than(days);
+    spinner.set_message("vacuuming…");
     let stats_after = cache.stats()?;
     drop(cache);
+    spinner.finish_and_clear();
+    let removed = removed?;
 
     let size_after = std::fs::metadata(&cache_db).map(|m| m.len()).unwrap_or(0);
 

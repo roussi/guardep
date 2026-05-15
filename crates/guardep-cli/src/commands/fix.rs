@@ -82,6 +82,9 @@ pub async fn run(path: &Path, target: FixTarget, apply: bool, yes: bool) -> Resu
             return Ok(());
         }
         let pm = PackageManager::detect(path);
+        if !yes {
+            print_manifest_diff(path, &plan.upgrades);
+        }
         // Confirmation: --apply without --yes asks before mutating
         // package.json + lockfile. CI users opt out via --yes.
         if !yes && !confirm(plan.upgrades.len(), pm)? {
@@ -107,6 +110,66 @@ pub async fn run(path: &Path, target: FixTarget, apply: bool, yes: bool) -> Resu
         );
     }
     Ok(())
+}
+
+// Show a unified diff of how `package.json` will look after the
+// upgrades. The actual change is performed by the package manager so
+// the projection is approximate (it only swaps existing version
+// strings; transitive bumps and lockfile detail still come from npm).
+// Good enough to confirm "yes I want to bump these specific deps".
+fn print_manifest_diff(project_root: &Path, upgrades: &[Upgrade]) {
+    if upgrades.is_empty() {
+        return;
+    }
+    let manifest = project_root.join("package.json");
+    let Ok(current) = std::fs::read_to_string(&manifest) else {
+        return;
+    };
+    let projected = project_manifest(&current, upgrades);
+    if projected == current {
+        return;
+    }
+    eprintln!("\n{} package.json diff preview:", ">".cyan());
+    let diff = similar::TextDiff::from_lines(&current, &projected);
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Delete => {
+                eprint!("  {}", format!("-{change}").red());
+            }
+            similar::ChangeTag::Insert => {
+                eprint!("  {}", format!("+{change}").green());
+            }
+            similar::ChangeTag::Equal => {}
+        }
+    }
+}
+
+fn project_manifest(original: &str, upgrades: &[Upgrade]) -> String {
+    // Line-level swap: for each upgrade, replace any line that pins the
+    // current version with the new `^target` spec. Conservative: only
+    // touches lines where both the package name and current version
+    // match, leaving comments / unrelated keys alone.
+    let mut out = String::with_capacity(original.len());
+    'lines: for line in original.split_inclusive('\n') {
+        for u in upgrades {
+            let needle_quoted = format!("\"{}\"", u.name);
+            if !line.contains(&needle_quoted) {
+                continue;
+            }
+            let current_pat = format!("\"{}\"", u.current_version);
+            let current_caret = format!("\"^{}\"", u.current_version);
+            let current_tilde = format!("\"~{}\"", u.current_version);
+            let target = format!("\"^{}\"", u.target_version);
+            for from in [&current_pat, &current_caret, &current_tilde] {
+                if line.contains(from.as_str()) {
+                    out.push_str(&line.replacen(from.as_str(), &target, 1));
+                    continue 'lines;
+                }
+            }
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 fn confirm(upgrade_count: usize, pm: PackageManager) -> Result<bool> {
@@ -426,5 +489,39 @@ mod tests {
         assert_eq!(cmd, vec!["yarn", "add"]);
         // Caller is responsible for not invoking when empty; this just
         // verifies the function doesn't panic.
+    }
+
+    fn upg_with_current(name: &str, current: &str, target: &str) -> Upgrade {
+        Upgrade {
+            name: name.into(),
+            current_version: current.into(),
+            target_version: target.into(),
+            clears: "1/1".into(),
+        }
+    }
+
+    #[test]
+    fn project_manifest_swaps_exact_version() {
+        let manifest = "{\n  \"dependencies\": {\n    \"axios\": \"1.0.0\"\n  }\n}\n";
+        let out = project_manifest(manifest, &[upg_with_current("axios", "1.0.0", "1.0.5")]);
+        assert!(out.contains("\"^1.0.5\""));
+        assert!(!out.contains("\"1.0.0\""));
+    }
+
+    #[test]
+    fn project_manifest_swaps_caret_range() {
+        let manifest = "{\n  \"dependencies\": {\n    \"axios\": \"^1.0.0\"\n  }\n}\n";
+        let out = project_manifest(manifest, &[upg_with_current("axios", "1.0.0", "1.0.5")]);
+        assert!(out.contains("\"^1.0.5\""));
+        assert!(!out.contains("\"^1.0.0\""));
+    }
+
+    #[test]
+    fn project_manifest_leaves_unrelated_lines_alone() {
+        let manifest = "{\n  \"name\": \"foo\",\n  \"dependencies\": {\n    \"axios\": \"1.0.0\",\n    \"lodash\": \"4.17.20\"\n  }\n}\n";
+        let out = project_manifest(manifest, &[upg_with_current("axios", "1.0.0", "1.0.5")]);
+        assert!(out.contains("\"^1.0.5\""));
+        assert!(out.contains("\"4.17.20\""));
+        assert!(out.contains("\"name\": \"foo\""));
     }
 }

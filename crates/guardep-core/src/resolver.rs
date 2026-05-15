@@ -653,6 +653,14 @@ impl Resolver for NpmDryRunResolver {
             let _ = std::fs::copy(&existing_npmrc, workdir.path().join(".npmrc"));
         }
 
+        let spinner = indicatif::ProgressBar::new_spinner();
+        spinner.set_style(
+            indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner()),
+        );
+        spinner.set_message("resolving npm dependencies…");
+        spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
         let mut cmd = Command::new("npm");
         cmd.args(&self.args)
             .arg("--package-lock-only")
@@ -661,7 +669,9 @@ impl Resolver for NpmDryRunResolver {
             .env("PATH", scrub_shim_from_path());
         let output = cmd
             .output()
-            .context("invoke `npm install --package-lock-only --ignore-scripts`")?;
+            .context("invoke `npm install --package-lock-only --ignore-scripts`");
+        spinner.finish_and_clear();
+        let output = output?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
