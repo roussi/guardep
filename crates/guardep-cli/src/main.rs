@@ -86,7 +86,10 @@ impl From<SeverityArg> for guardep_core::FindingSeverity {
 #[command(
     name = "guardep",
     version,
-    about = "Block compromised dependencies before they install"
+    about = "Block compromised dependencies before they install",
+    long_about = None,
+    after_help = HELP_AFTER,
+    disable_help_subcommand = true,
 )]
 struct Cli {
     /// Verbose logging (HTTP calls, evaluator timings, cache hits).
@@ -94,9 +97,36 @@ struct Cli {
     /// shown. Use `--severity` to control finding visibility.
     #[arg(short = 'v', long, global = true)]
     verbose: bool,
+    /// Hide the banner. Auto-enabled in CI / when stdout is piped.
+    #[arg(long, global = true)]
+    no_banner: bool,
     #[command(subcommand)]
     command: Cmd,
 }
+
+const HELP_AFTER: &str = "\
+Examples:
+  $ guardep audit                           # audit current dir, default Low+ severity
+  $ guardep audit --severity high           # only High + Critical
+  $ guardep audit --collapse --format json  # one row per package, JSON for CI
+  $ guardep fix --apply                     # bump vulnerable deps, after y/N preview
+  $ guardep install-shims                   # wire npm/pnpm/yarn through guardep
+
+Environment variables:
+  NO_COLOR              Disable ANSI colors
+  CLICOLOR_FORCE        Force ANSI colors even when stdout is piped
+  GUARDEP_LOG           Override tracing filter (e.g. `guardep=debug,reqwest=info`)
+  GUARDEP_STRICT=1      Fail closed when shim audit errors (default: fail open)
+  GUARDEP_BYPASS=1      Reserved for shim bypass (not yet wired)
+
+Exit codes:
+  0   clean (or `--fail-on never`)
+  1   warnings present (only when `--fail-on warn`)
+  2   blocks present (default `--fail-on block`)
+  >2  underlying tool error passed through (shim mode)
+
+For per-command help: `guardep <command> --help`.
+";
 
 #[derive(Subcommand)]
 enum CacheCmd {
@@ -187,6 +217,78 @@ enum Cmd {
     Cache(CacheCmd),
 }
 
+// Banner shown above `--help` / `--version` output. Modeled on
+// Socket's compact 4-line ASCII header: name + version on the left,
+// runtime context (shim status, cwd) on the right. Skipped under
+// `--no-banner`, when stdout is non-tty (CI / piped), or under
+// the conventional `NO_COLOR` / `CI` env vars to keep CI logs
+// clean. Always written to stderr so it doesn't pollute pipes
+// even when the tty heuristic is wrong.
+fn maybe_print_banner() {
+    use std::io::IsTerminal;
+
+    let args: Vec<String> = std::env::args().collect();
+    let wants_meta_output = args
+        .iter()
+        .any(|a| matches!(a.as_str(), "-h" | "--help" | "-V" | "--version"));
+    if !wants_meta_output {
+        return;
+    }
+    if args.iter().any(|a| a == "--no-banner") {
+        return;
+    }
+    if std::env::var_os("NO_COLOR").is_some() || std::env::var_os("CI").is_some() {
+        return;
+    }
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+
+    let version = env!("CARGO_PKG_VERSION");
+    let cwd = std::env::current_dir()
+        .ok()
+        .and_then(|p| {
+            // Display ~ for $HOME so the banner stays narrow.
+            let home = std::env::var_os("HOME")?;
+            let home = std::path::PathBuf::from(home);
+            p.strip_prefix(&home)
+                .ok()
+                .map(|rel| format!("~/{}", rel.display()))
+                .or_else(|| Some(p.display().to_string()))
+        })
+        .unwrap_or_else(|| ".".to_string());
+    let shim_status = match commands::install_shims::shim_dir() {
+        Ok(dir) if dir.join("npm").exists() => "active",
+        _ => "not installed",
+    };
+
+    // Five-line ASCII logo, padded to a constant width so the
+    // right-side context column stays aligned. Width chosen to match
+    // the widest logo line (line 3, 41 cols).
+    let logo = [
+        "   __ _ _   _  __ _ _ __ __| | ___ _ __  ",
+        "  / _` | | | |/ _` | '__/ _` |/ _ \\ '_ \\ ",
+        " | (_| | |_| | (_| | | | (_| |  __/ |_) |",
+        "  \\__, |\\__,_|\\__,_|_|  \\__,_|\\___| .__/ ",
+        "  |___/                           |_|.dev",
+    ];
+    let context = [
+        format!("guardep v{version}"),
+        format!("shims: {shim_status}"),
+        format!("cwd:   {cwd}"),
+        String::new(),
+        String::new(),
+    ];
+    for (l, c) in logo.iter().zip(context.iter()) {
+        if c.is_empty() {
+            eprintln!("  {l}  |");
+        } else {
+            eprintln!("  {l}  | {c}");
+        }
+    }
+    eprintln!();
+}
+
 // Configure log level. `--verbose` bumps the default from `warn` to
 // `debug` so HTTP calls / cache hits / evaluator timings surface in
 // stderr. `GUARDEP_LOG` env var overrides both.
@@ -230,6 +332,8 @@ async fn main() -> Result<()> {
         let args: Vec<String> = std::env::args().skip(1).collect();
         return shim::run(&tool, &args).await;
     }
+
+    maybe_print_banner();
 
     let cli = Cli::parse();
     init_tracing(cli.verbose);
