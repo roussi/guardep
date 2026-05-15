@@ -257,6 +257,8 @@ pub fn auto_resolve(project_root: &Path) -> Result<(Vec<PackageRef>, &'static st
         ("pnpm-lock.yaml", &|| Box::new(PnpmLockResolver)),
         ("yarn.lock", &|| Box::new(YarnLockResolver)),
         ("pom.xml", &|| Box::new(MavenTreeResolver)),
+        ("build.gradle", &|| Box::new(GradleResolver)),
+        ("build.gradle.kts", &|| Box::new(GradleResolver)),
     ];
 
     let present: Vec<&'static str> = candidates
@@ -269,7 +271,7 @@ pub fn auto_resolve(project_root: &Path) -> Result<(Vec<PackageRef>, &'static st
     let Some(chosen_name) = chosen else {
         anyhow::bail!(
             "no supported manifest in {} (looked for package-lock.json, \
-             pnpm-lock.yaml, yarn.lock, pom.xml)",
+             pnpm-lock.yaml, yarn.lock, pom.xml, build.gradle, build.gradle.kts)",
             project_root.display()
         );
     };
@@ -314,9 +316,10 @@ pub fn resolve_with(project_root: &Path, lockfile: &str) -> Result<Vec<PackageRe
         "pnpm-lock.yaml" => Box::new(PnpmLockResolver),
         "yarn.lock" => Box::new(YarnLockResolver),
         "pom.xml" => Box::new(MavenTreeResolver),
+        "build.gradle" | "build.gradle.kts" => Box::new(GradleResolver),
         other => anyhow::bail!(
             "unsupported lockfile `{other}` (try package-lock.json, \
-             pnpm-lock.yaml, yarn.lock, pom.xml)"
+             pnpm-lock.yaml, yarn.lock, pom.xml, build.gradle, build.gradle.kts)"
         ),
     };
     resolver.resolve(project_root)
@@ -479,6 +482,54 @@ mod tests {
     }
 
     #[test]
+    fn parse_gradle_tree_basic() {
+        let raw = "\
+runtimeClasspath - Runtime classpath of source set 'main'.
++--- com.google.guava:guava:31.1-jre
+|    +--- com.google.guava:failureaccess:1.0.1
+|    \\--- com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava
+\\--- org.apache.commons:commons-lang3:3.12.0
+";
+        let pkgs = super::parse_gradle_tree(raw);
+        let names: Vec<&str> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"com.google.guava:guava"));
+        assert!(names.contains(&"com.google.guava:failureaccess"));
+        assert!(names.contains(&"com.google.guava:listenablefuture"));
+        assert!(names.contains(&"org.apache.commons:commons-lang3"));
+        assert_eq!(pkgs.len(), 4);
+    }
+
+    #[test]
+    fn parse_gradle_tree_honours_resolved_version_arrow() {
+        // When Gradle upgrades a transitive past the requested version
+        // it appends `-> <new>`. We must take the resolved one.
+        let raw = "\
+runtimeClasspath
++--- com.google.guava:guava:30.0-jre -> 31.1-jre
+";
+        let pkgs = super::parse_gradle_tree(raw);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].version, "31.1-jre");
+    }
+
+    #[test]
+    fn parse_gradle_tree_skips_markers_and_constraints() {
+        let raw = "\
+runtimeClasspath
++--- com.google.guava:guava:31.1-jre (*)
++--- com.google.guava:guava:31.1-jre (c)
++--- com.google.guava:guava:31.1-jre (n)
+\\--- project :common
+";
+        let pkgs = super::parse_gradle_tree(raw);
+        // Three of the four entries reference guava; markers don't
+        // change the GAV so we still emit one unique entry. The
+        // `project :common` line has no GAV → skipped.
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "com.google.guava:guava");
+    }
+
+    #[test]
     fn auto_resolve_picks_npm_lock_when_present() {
         let dir = TempDir::new().unwrap();
         write(
@@ -609,6 +660,135 @@ fn parse_tgf(raw: &str) -> Vec<PackageRef> {
         }
         let name = format!("{group}:{artifact}");
         out.insert(PackageRef::new(Ecosystem::Maven, name, version));
+    }
+    out.into_iter().collect()
+}
+
+// ── Gradle dependency resolver ──────────────────────────────────────────
+//
+// Gradle projects (Groovy or Kotlin DSL) describe dependencies in build
+// scripts whose evaluation requires a JVM and the Gradle daemon. There
+// is no static lockfile we can parse like `package-lock.json`, so we
+// shell out to `gradle dependencies --configuration runtimeClasspath
+// --quiet` and parse the rendered tree.
+//
+// Output shape (Gradle 6+):
+//
+//   runtimeClasspath - Runtime classpath of source set 'main'.
+//   +--- com.google.guava:guava:31.1-jre
+//   |    +--- com.google.guava:failureaccess:1.0.1
+//   |    \--- com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava
+//   \--- org.apache.commons:commons-lang3:3.12.0
+//
+// Each non-blank line carries a `group:artifact:version` triple after
+// the tree-drawing prefix (`+--- `, `\--- `, `|    `, etc.). Some
+// entries get a resolution arrow (`-> 31.1-jre`) when Gradle picks a
+// different version than the one declared; we honour the resolved
+// version on the right of the arrow.
+//
+// Skipped:
+//   - "(*)" / "(c)" markers (already-shown subtrees, constraints).
+//   - "(n)" markers (declared but not resolved).
+//   - Lines lacking a `:` after the prefix (configuration headers).
+
+pub struct GradleResolver;
+
+impl Resolver for GradleResolver {
+    fn resolve(&self, project_root: &Path) -> Result<Vec<PackageRef>> {
+        // Imports kept local: `Command` is brought in below for the
+        // npm dry-run resolver, and `PathBuf` is otherwise unused at
+        // module scope. Pulling them in here keeps the change isolated.
+        use std::path::PathBuf;
+        use std::process::Command;
+        let has_groovy = project_root.join("build.gradle").exists();
+        let has_kotlin = project_root.join("build.gradle.kts").exists();
+        let has_settings = project_root.join("settings.gradle").exists()
+            || project_root.join("settings.gradle.kts").exists();
+        if !(has_groovy || has_kotlin || has_settings) {
+            anyhow::bail!("no Gradle build script found in {}", project_root.display());
+        }
+
+        // Prefer the wrapper when present (consistent Gradle version
+        // across machines + no global gradle dependency).
+        let (cmd, leading_arg): (PathBuf, Option<&str>) = if project_root.join("gradlew").exists() {
+            (project_root.join("gradlew"), None)
+        } else {
+            (PathBuf::from("gradle"), None)
+        };
+
+        let mut command = Command::new(&cmd);
+        if let Some(arg) = leading_arg {
+            command.arg(arg);
+        }
+        command
+            .arg("dependencies")
+            .arg("--configuration")
+            .arg("runtimeClasspath")
+            .arg("--quiet")
+            .arg("--console=plain")
+            .current_dir(project_root)
+            .env("PATH", scrub_shim_from_path());
+
+        let output = command
+            .output()
+            .with_context(|| format!("invoke `{} dependencies`", cmd.display()))?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "gradle dependencies exited {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let raw = String::from_utf8_lossy(&output.stdout);
+        Ok(parse_gradle_tree(&raw))
+    }
+}
+
+fn parse_gradle_tree(raw: &str) -> Vec<PackageRef> {
+    let mut out: BTreeSet<PackageRef> = BTreeSet::new();
+    for line in raw.lines() {
+        let trimmed = line.trim_start_matches([' ', '|', '+', '\\', '-']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Skip configuration headers ("runtimeClasspath - ...") and
+        // "No dependencies" notices.
+        if !trimmed.contains(':') {
+            continue;
+        }
+        if trimmed.starts_with("No dependencies") {
+            continue;
+        }
+        // Suffix markers Gradle appends. `(*)` means "see above";
+        // `(c)` is a dependency constraint, not a resolved entry;
+        // `(n)` means declared-but-not-resolved.
+        let core = trimmed
+            .split_once(" (")
+            .map(|(left, _)| left)
+            .unwrap_or(trimmed)
+            .trim();
+        if core.is_empty() {
+            continue;
+        }
+        // Honour the version Gradle actually resolved when it had to
+        // upgrade past the requested one: `... -> 31.1-jre`.
+        let (left, version_override) = match core.rsplit_once(" -> ") {
+            Some((left, ver)) => (left.trim(), Some(ver.trim())),
+            None => (core, None),
+        };
+        let parts: Vec<&str> = left.split(':').collect();
+        let (group, artifact, version) = match parts.as_slice() {
+            [g, a, v] => (*g, *a, *v),
+            // Project dependencies (`project :common`) have no GAV;
+            // leave them out of the audit graph.
+            _ => continue,
+        };
+        let resolved = version_override.unwrap_or(version);
+        if group.is_empty() || artifact.is_empty() || resolved.is_empty() {
+            continue;
+        }
+        let name = format!("{group}:{artifact}");
+        out.insert(PackageRef::new(Ecosystem::Maven, name, resolved));
     }
     out.into_iter().collect()
 }

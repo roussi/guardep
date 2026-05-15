@@ -25,6 +25,7 @@ pub async fn run(
     format: Format,
     min_severity: FindingSeverity,
     fail_on: FailOn,
+    granular: bool,
 ) -> Result<()> {
     eprintln!(
         "{} diffing {} → {}",
@@ -33,8 +34,10 @@ pub async fn run(
         head.display()
     );
 
-    let (base_pkgs, base_report) = evaluate_project_with_pkgs(base, min_severity, None).await?;
-    let (head_pkgs, head_report) = evaluate_project_with_pkgs(head, min_severity, None).await?;
+    let (base_pkgs, base_report) =
+        evaluate_project_with_pkgs(base, min_severity, None, granular).await?;
+    let (head_pkgs, head_report) =
+        evaluate_project_with_pkgs(head, min_severity, None, granular).await?;
 
     let base_keys: HashSet<FindingKey> = base_report
         .deduped()
@@ -68,6 +71,7 @@ pub async fn run(
         Format::Table => crate::report::print_verdict(&new_report, false),
         Format::Json => crate::report::print_json(&new_report, false)?,
         Format::CycloneDx => sbom::print_cyclonedx(&head_pkgs, &new_report)?,
+        Format::Sarif => crate::sarif::print_sarif(&new_report)?,
     }
 
     let exit_code = match fail_on {

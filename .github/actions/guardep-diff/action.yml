@@ -1,0 +1,186 @@
+name: 'guardep diff'
+description: 'PR-aware dependency audit. Reports only findings the head adds over the base branch.'
+author: 'guardep'
+branding:
+  icon: 'shield'
+  color: 'orange'
+inputs:
+  base-ref:
+    description: 'Base ref to diff against. Defaults to the PR base or the default branch.'
+    required: false
+    default: ''
+  head-path:
+    description: 'Path to the head project root.'
+    required: false
+    default: '.'
+  severity:
+    description: 'Minimum severity to display (info|low|medium|high|critical).'
+    required: false
+    default: 'low'
+  fail-on:
+    description: 'Threshold above which the action exits non-zero (never|warn|block).'
+    required: false
+    default: 'block'
+  format:
+    description: 'Output format. Use `sarif` to feed GitHub code-scanning.'
+    required: false
+    default: 'sarif'
+  upload-sarif:
+    description: 'When true and format=sarif, upload to the code-scanning UI via github/codeql-action/upload-sarif.'
+    required: false
+    default: 'true'
+  guardep-version:
+    description: 'guardep release tag to install. Defaults to `latest`.'
+    required: false
+    default: 'latest'
+outputs:
+  report-path:
+    description: 'Path to the rendered guardep diff report.'
+    value: ${{ steps.diff.outputs.report-path }}
+  new-blocks:
+    description: 'Number of new findings at Block action.'
+    value: ${{ steps.diff.outputs.new-blocks }}
+  new-warnings:
+    description: 'Number of new findings at Warn action.'
+    value: ${{ steps.diff.outputs.new-warnings }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve base ref
+      id: base
+      shell: bash
+      run: |
+        set -euo pipefail
+        REF='${{ inputs.base-ref }}'
+        if [ -z "$REF" ]; then
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            REF="origin/${GITHUB_BASE_REF}"
+          else
+            REF="origin/$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)"
+          fi
+        fi
+        echo "ref=$REF" >> "$GITHUB_OUTPUT"
+        echo "Using base ref: $REF"
+      env:
+        GH_TOKEN: ${{ github.token }}
+
+    - name: Fetch base ref
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Ensure the base ref exists locally; checkout@v4 with fetch-depth=0
+        # is recommended in the caller workflow for reliable behaviour.
+        git fetch --no-tags --depth=1 origin "${{ steps.base.outputs.ref }}" || \
+          git fetch --no-tags origin "${{ steps.base.outputs.ref }}" || true
+
+    - name: Worktree of base ref
+      id: worktree
+      shell: bash
+      run: |
+        set -euo pipefail
+        WORK="$(mktemp -d)"
+        git worktree add --detach "$WORK" "${{ steps.base.outputs.ref }}"
+        echo "path=$WORK" >> "$GITHUB_OUTPUT"
+
+    - name: Install guardep
+      shell: bash
+      run: |
+        set -euo pipefail
+        VERSION='${{ inputs.guardep-version }}'
+        OS="$(uname -s)"
+        ARCH="$(uname -m)"
+        # Map to release-asset naming. Adjust here when the release
+        # workflow renames artifacts. `latest` resolves via gh.
+        if [ "$VERSION" = "latest" ]; then
+          VERSION="$(gh release view --repo aroussi/guardep --json tagName -q .tagName 2>/dev/null || true)"
+        fi
+        if [ -z "${VERSION:-}" ]; then
+          echo "::error::Could not resolve guardep release tag. Pass guardep-version explicitly."
+          exit 1
+        fi
+        ASSET=""
+        case "$OS-$ARCH" in
+          Linux-x86_64)   ASSET="guardep-${VERSION#v}-x86_64-unknown-linux-gnu.tar.gz" ;;
+          Linux-aarch64)  ASSET="guardep-${VERSION#v}-aarch64-unknown-linux-gnu.tar.gz" ;;
+          Darwin-x86_64)  ASSET="guardep-${VERSION#v}-x86_64-apple-darwin.tar.gz" ;;
+          Darwin-arm64)   ASSET="guardep-${VERSION#v}-aarch64-apple-darwin.tar.gz" ;;
+          *)
+            echo "::error::Unsupported platform: $OS-$ARCH"
+            exit 1
+            ;;
+        esac
+        TMPDIR="$(mktemp -d)"
+        gh release download "$VERSION" --repo aroussi/guardep --pattern "$ASSET" --dir "$TMPDIR"
+        tar -xzf "$TMPDIR/$ASSET" -C "$TMPDIR"
+        sudo install -m 0755 "$TMPDIR/guardep" /usr/local/bin/guardep
+        guardep --version
+      env:
+        GH_TOKEN: ${{ github.token }}
+
+    - name: guardep diff
+      id: diff
+      shell: bash
+      run: |
+        set -euo pipefail
+        OUT="guardep-diff.${{ inputs.format }}"
+        # Run with exit-on-fail disabled here so we can capture counts;
+        # the action re-raises after counting if fail-on is breached.
+        set +e
+        guardep diff \
+          --base "${{ steps.worktree.outputs.path }}" \
+          --head "${{ inputs.head-path }}" \
+          --severity "${{ inputs.severity }}" \
+          --format "${{ inputs.format }}" \
+          --fail-on never \
+          > "$OUT"
+        DIFF_RC=$?
+        set -e
+        echo "report-path=$OUT" >> "$GITHUB_OUTPUT"
+
+        # Count NEW blocks/warnings from the JSON output for stable
+        # action outputs regardless of format choice.
+        guardep diff \
+          --base "${{ steps.worktree.outputs.path }}" \
+          --head "${{ inputs.head-path }}" \
+          --severity "${{ inputs.severity }}" \
+          --format json \
+          --fail-on never \
+          > diff.summary.json
+        NEW_BLOCKS=$(jq '[.findings[].findings[]? | select(.action == "block")] | length' diff.summary.json)
+        NEW_WARNINGS=$(jq '[.findings[].findings[]? | select(.action == "warn")] | length' diff.summary.json)
+        echo "new-blocks=$NEW_BLOCKS" >> "$GITHUB_OUTPUT"
+        echo "new-warnings=$NEW_WARNINGS" >> "$GITHUB_OUTPUT"
+        echo "::notice::guardep diff: $NEW_BLOCKS new block(s), $NEW_WARNINGS new warning(s)"
+
+        case '${{ inputs.fail-on }}' in
+          block)
+            if [ "$NEW_BLOCKS" -gt 0 ]; then
+              echo "::error::guardep diff: $NEW_BLOCKS new block(s) introduced"
+              exit 2
+            fi
+            ;;
+          warn)
+            if [ "$NEW_BLOCKS" -gt 0 ]; then exit 2; fi
+            if [ "$NEW_WARNINGS" -gt 0 ]; then
+              echo "::warning::guardep diff: $NEW_WARNINGS new warning(s) introduced"
+              exit 1
+            fi
+            ;;
+          never) ;;
+        esac
+
+    - name: Upload SARIF to code-scanning
+      if: ${{ inputs.format == 'sarif' && inputs.upload-sarif == 'true' && always() }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.diff.outputs.report-path }}
+        category: guardep
+
+    - name: Cleanup worktree
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ steps.worktree.outputs.path }}" ] && [ -d "${{ steps.worktree.outputs.path }}" ]; then
+          git worktree remove --force "${{ steps.worktree.outputs.path }}" || true
+        fi

@@ -58,6 +58,8 @@ fn snap(
         has_repository: has_repo,
         weekly_downloads,
         versions_deprecated: std::collections::HashMap::new(),
+        maintainer_logins: Vec::new(),
+        observed_at: None,
     }
 }
 

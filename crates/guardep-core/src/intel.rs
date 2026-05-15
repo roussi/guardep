@@ -358,6 +358,20 @@ pub struct IntelSnapshot {
     /// non-empty deprecation message to keep the cache compact.
     #[serde(default)]
     pub versions_deprecated: std::collections::HashMap<String, String>,
+    /// Sorted, lowercased set of npm maintainer usernames seen on
+    /// the package. Used to detect ownership transfers between scans
+    /// (newAuthor): when the snapshot we previously cached has a
+    /// strictly different set, we flag a `new-maintainer` reason.
+    /// Stored sorted+lowercased so cross-snapshot diffs are stable.
+    #[serde(default)]
+    pub maintainer_logins: Vec<String>,
+    /// When this snapshot was first observed by guardep (RFC3339).
+    /// Acts as the "previous-snapshot" reference point for the
+    /// new-maintainer diff: we only fire the reason when the freshly-
+    /// fetched maintainer set differs AND the cached snapshot is at
+    /// least a few hours old (i.e. we have a real before/after).
+    #[serde(default)]
+    pub observed_at: Option<String>,
 }
 
 pub struct IntelEvaluator {
@@ -484,6 +498,20 @@ impl Evaluator for IntelEvaluator {
             }
         }
 
+        // Phase 2a: capture the previous snapshot for each miss before
+        // we overwrite the row. Used by the new-maintainer detector to
+        // diff the maintainer set across observations even when the
+        // cache has TTL-expired.
+        let mut prior: std::collections::HashMap<String, IntelSnapshot> =
+            std::collections::HashMap::new();
+        for pkg in &misses {
+            if let Ok(Some(payload)) = cache.get_any("intel", &pkg.name) {
+                if let Ok(snap) = serde_json::from_str::<IntelSnapshot>(&payload) {
+                    prior.insert(pkg.name.clone(), snap);
+                }
+            }
+        }
+
         // Phase 2: parallel HTTP fetches for misses, bounded concurrency.
         // 32 concurrent registry requests is well within polite limits and
         // collapses ~700 sequential fetches from ~35s to ~1-2s.
@@ -502,12 +530,23 @@ impl Evaluator for IntelEvaluator {
             .collect()
             .await;
 
-        // Phase 3: write fetched snapshots back to cache.
-        for (pkg, snap) in &fetched {
-            if let Err(e) = Self::cache_put(&cache, &pkg.name, snap) {
+        // Phase 3: write fetched snapshots back to cache. Preserve the
+        // earliest `observed_at` from the prior row so the
+        // new-maintainer detector knows how long ago we first saw the
+        // package — needed to suppress the finding on first-ever scans.
+        let mut to_persist: Vec<(PackageRef, IntelSnapshot)> = Vec::with_capacity(fetched.len());
+        for (pkg, mut snap) in fetched {
+            if let Some(prev) = prior.get(&pkg.name) {
+                if prev.observed_at.is_some() {
+                    snap.observed_at = prev.observed_at.clone();
+                }
+            }
+            if let Err(e) = Self::cache_put(&cache, &pkg.name, &snap) {
                 tracing::warn!("intel cache put failed for {}: {e}", pkg.name);
             }
+            to_persist.push((pkg, snap));
         }
+        let fetched = to_persist;
 
         // Phase 4: score everything. Two independent finding paths:
         // composite risk score, and per-version deprecation. Deprecation
@@ -519,12 +558,87 @@ impl Evaluator for IntelEvaluator {
             if let Some(f) = score_package(pkg, snap, policy, installed_published_at) {
                 findings.push(f);
             }
+            if let Some(prev) = prior.get(&pkg.name) {
+                if let Some(f) = new_maintainer_finding(pkg, prev, snap) {
+                    findings.push(f);
+                }
+            }
             if let Some(f) = deprecated_finding(pkg, snap) {
                 findings.push(f);
             }
         }
         Ok(findings)
     }
+}
+
+/// Detect ownership transfers across snapshots. Compares the
+/// previously-cached maintainer set against the freshly-fetched one
+/// and emits a `new-maintainer` risk-score finding when the sets
+/// differ — but only after a stabilisation window so first-ever scans
+/// (where any set looks "new") don't fire.
+///
+/// Stabilisation rule: the prior snapshot must have been observed at
+/// least `MIN_OBSERVATION_HOURS` ago. If the package is brand new in
+/// our cache we skip the check; the next run after the window passes
+/// will catch a real change.
+const MIN_OBSERVATION_HOURS: i64 = 12;
+
+fn new_maintainer_finding(
+    pkg: &PackageRef,
+    prev: &IntelSnapshot,
+    curr: &IntelSnapshot,
+) -> Option<Finding> {
+    if prev.maintainer_logins.is_empty() || curr.maintainer_logins.is_empty() {
+        return None;
+    }
+    if prev.maintainer_logins == curr.maintainer_logins {
+        return None;
+    }
+    let observed = prev.observed_at.as_deref()?;
+    let observed_dt = parse_ts(observed)?;
+    let age = Utc::now().signed_duration_since(observed_dt);
+    if age.num_hours() < MIN_OBSERVATION_HOURS {
+        return None;
+    }
+
+    let added: Vec<&String> = curr
+        .maintainer_logins
+        .iter()
+        .filter(|m| !prev.maintainer_logins.contains(m))
+        .collect();
+    let removed: Vec<&String> = prev
+        .maintainer_logins
+        .iter()
+        .filter(|m| !curr.maintainer_logins.contains(m))
+        .collect();
+    if added.is_empty() && removed.is_empty() {
+        return None;
+    }
+
+    Some(Finding {
+        package: pkg.clone(),
+        kind: FindingKind::RiskScore,
+        id: format!("risk:new-maintainer:{}", pkg.name),
+        aliases: vec![],
+        summary: format!(
+            "Maintainer set changed since previous scan ({} added, {} removed)",
+            added.len(),
+            removed.len()
+        ),
+        // High by default: package-takeover is a known compromise
+        // vector. Users can soften via policy.warn_if_risk_score_above
+        // or the finding allowlist.
+        severity: FindingSeverity::High,
+        fixed_versions: vec![],
+        references: vec![format!("https://www.npmjs.com/package/{}", pkg.name)],
+        details: serde_json::json!({
+            "reasons": ["new-maintainer"],
+            "added": added,
+            "removed": removed,
+            "previous_observed_at": prev.observed_at,
+            "score": null,
+        }),
+    })
 }
 
 /// Emit a finding when the *installed* version is marked deprecated by
@@ -553,11 +667,23 @@ fn deprecated_finding(pkg: &PackageRef, snap: &IntelSnapshot) -> Option<Finding>
 
 /// Extract just the fields we care about from a full npm metadata document.
 fn snapshot_from_metadata(body: &Value) -> IntelSnapshot {
-    let maintainer_count = body
-        .get("maintainers")
-        .and_then(Value::as_array)
-        .map(|a| a.len())
-        .unwrap_or(0);
+    let maintainers_array = body.get("maintainers").and_then(Value::as_array);
+    let maintainer_count = maintainers_array.map(|a| a.len()).unwrap_or(0);
+    // Collect maintainer logins lowercased + sorted so cross-snapshot
+    // diffs are stable and case-insensitive.
+    let maintainer_logins: Vec<String> = match maintainers_array {
+        Some(arr) => {
+            let mut v: Vec<String> = arr
+                .iter()
+                .filter_map(|m| m.get("name").and_then(Value::as_str))
+                .map(|s| s.to_ascii_lowercase())
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        }
+        None => Vec::new(),
+    };
 
     let versions = body.get("versions").and_then(Value::as_object);
     let version_count = versions.map(|m| m.len()).unwrap_or(0);
@@ -624,6 +750,8 @@ fn snapshot_from_metadata(body: &Value) -> IntelSnapshot {
         has_repository,
         versions_deprecated,
         weekly_downloads: None,
+        maintainer_logins,
+        observed_at: Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     }
 }
 
@@ -1028,6 +1156,8 @@ mod tests {
             has_repository: has_repo,
             weekly_downloads: None,
             versions_deprecated: std::collections::HashMap::new(),
+            maintainer_logins: Vec::new(),
+            observed_at: None,
         }
     }
 
@@ -1229,6 +1359,45 @@ mod tests {
             findings[0].severity
         );
         assert_eq!(findings[0].details["typosquat_of"].as_str(), Some("lodash"));
+    }
+
+    fn snap_with_maintainers(logins: &[&str], observed_hours_ago: i64) -> IntelSnapshot {
+        let mut s = make_snapshot(logins.len(), 10, None, None, None, None, true);
+        s.maintainer_logins = logins.iter().map(|l| l.to_ascii_lowercase()).collect();
+        s.maintainer_logins.sort();
+        s.observed_at = Some((Utc::now() - Duration::hours(observed_hours_ago)).to_rfc3339());
+        s
+    }
+
+    #[test]
+    fn new_maintainer_emits_when_set_changes_and_prior_is_old_enough() {
+        let prev = snap_with_maintainers(&["alice", "bob"], MIN_OBSERVATION_HOURS + 1);
+        let curr = snap_with_maintainers(&["alice", "bob", "mallory"], 0);
+        let pkg = npm("foo", "1.0.0");
+        let f = new_maintainer_finding(&pkg, &prev, &curr).expect("emit");
+        assert_eq!(f.severity, FindingSeverity::High);
+        assert_eq!(f.id, "risk:new-maintainer:foo");
+        let added = f.details["added"].as_array().unwrap();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].as_str(), Some("mallory"));
+    }
+
+    #[test]
+    fn new_maintainer_skipped_when_prior_too_fresh() {
+        // Brand-new cache row (just observed) should not fire even if
+        // the sets differ — prevents first-ever scans tripping it.
+        let prev = snap_with_maintainers(&["alice"], 1);
+        let curr = snap_with_maintainers(&["alice", "bob"], 0);
+        let pkg = npm("foo", "1.0.0");
+        assert!(new_maintainer_finding(&pkg, &prev, &curr).is_none());
+    }
+
+    #[test]
+    fn new_maintainer_skipped_when_sets_match() {
+        let prev = snap_with_maintainers(&["alice", "bob"], MIN_OBSERVATION_HOURS + 1);
+        let curr = snap_with_maintainers(&["bob", "alice"], 0);
+        let pkg = npm("foo", "1.0.0");
+        assert!(new_maintainer_finding(&pkg, &prev, &curr).is_none());
     }
 
     #[test]

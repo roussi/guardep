@@ -21,6 +21,7 @@ pub enum Format {
     Table,
     Json,
     CycloneDx,
+    Sarif,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,12 +38,15 @@ pub async fn run(
     min_severity: FindingSeverity,
     fail_on: FailOn,
     lockfile: Option<&str>,
+    granular: bool,
 ) -> Result<()> {
-    let (packages, report) = evaluate_project_with_pkgs(path, min_severity, lockfile).await?;
+    let (packages, report) =
+        evaluate_project_with_pkgs(path, min_severity, lockfile, granular).await?;
     match format {
         Format::Table => crate::report::print_verdict(&report, collapse),
         Format::Json => crate::report::print_json(&report, collapse)?,
         Format::CycloneDx => crate::sbom::print_cyclonedx(&packages, &report)?,
+        Format::Sarif => crate::sarif::print_sarif(&report)?,
     }
     let exit_code = match fail_on {
         FailOn::Never => 0,
@@ -63,17 +67,19 @@ pub async fn evaluate_project(
     min_severity: FindingSeverity,
     lockfile: Option<&str>,
 ) -> Result<FindingsReport> {
-    let (_, report) = evaluate_project_with_pkgs(path, min_severity, lockfile).await?;
+    let (_, report) = evaluate_project_with_pkgs(path, min_severity, lockfile, false).await?;
     Ok(report)
 }
 
 /// Variant that returns the resolved package list alongside the report
-/// so callers (CycloneDX export, future SARIF) can include the full
-/// dependency graph, not just findings.
+/// so callers (CycloneDX export, SARIF, diff) can include the full
+/// dependency graph, not just findings. `granular` opts source-behavior
+/// findings into per-call-site emission.
 pub async fn evaluate_project_with_pkgs(
     path: &Path,
     min_severity: FindingSeverity,
     lockfile: Option<&str>,
+    granular: bool,
 ) -> Result<(Vec<PackageRef>, FindingsReport)> {
     let (packages, lockfile_kind) = match lockfile {
         Some(name) => (resolve_with(path, name)?, name),
@@ -88,7 +94,7 @@ pub async fn evaluate_project_with_pkgs(
         packages.len(),
         lockfile_kind
     );
-    let report = evaluate_packages(path, packages.clone(), min_severity).await?;
+    let report = evaluate_packages(path, packages.clone(), min_severity, granular).await?;
     Ok((packages, report))
 }
 
@@ -96,12 +102,18 @@ pub async fn evaluate_packages(
     path: &Path,
     packages: Vec<PackageRef>,
     min_severity: FindingSeverity,
+    granular: bool,
 ) -> Result<FindingsReport> {
     let mut policy = Policy::load(&path.join("guardep.toml"))?;
     // CLI override: `--severity X` lowers/raises the display threshold
     // independently of `guardep.toml`. Useful for one-off debugging
     // ("show me everything") or strict CI ("only critical+").
     policy.min_display_severity = min_severity;
+    // CLI override: `--granular` opts in to per-call-site source-behavior
+    // findings without needing a `guardep.toml`.
+    if granular {
+        policy.source_scan_granular = true;
+    }
 
     let dirs = directories::ProjectDirs::from("dev", "guardep", "guardep")
         .ok_or_else(|| anyhow::anyhow!("could not determine cache dir"))?;

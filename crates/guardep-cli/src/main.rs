@@ -1,5 +1,6 @@
 mod commands;
 mod report;
+mod sarif;
 mod sbom;
 mod shim;
 
@@ -13,6 +14,7 @@ enum OutputFormat {
     Table,
     Json,
     Cyclonedx,
+    Sarif,
 }
 
 impl From<OutputFormat> for commands::audit::Format {
@@ -21,6 +23,7 @@ impl From<OutputFormat> for commands::audit::Format {
             OutputFormat::Table => commands::audit::Format::Table,
             OutputFormat::Json => commands::audit::Format::Json,
             OutputFormat::Cyclonedx => commands::audit::Format::CycloneDx,
+            OutputFormat::Sarif => commands::audit::Format::Sarif,
         }
     }
 }
@@ -168,6 +171,11 @@ enum Cmd {
         /// `pom.xml`). Default: auto-detect.
         #[arg(long)]
         lockfile: Option<String>,
+        /// Emit one source-behavior finding per call-site instead of
+        /// aggregating per (package, behavior). Useful for downstream
+        /// tooling that wants byte-range granularity. Off by default.
+        #[arg(long)]
+        granular: bool,
     },
     /// Generate (and optionally apply) the upgrade commands that
     /// resolve fix-able findings in the current project.
@@ -237,6 +245,10 @@ enum Cmd {
         /// as `audit --fail-on`. Default: exit 2 when the PR adds blocks.
         #[arg(long, value_enum, default_value_t = FailOnArg::Block)]
         fail_on: FailOnArg,
+        /// Emit one source-behavior finding per call-site (see
+        /// `audit --granular`). Off by default.
+        #[arg(long)]
+        granular: bool,
     },
 }
 
@@ -369,6 +381,7 @@ async fn main() -> Result<()> {
             severity,
             fail_on,
             lockfile,
+            granular,
         } => {
             commands::audit::run(
                 &path,
@@ -377,6 +390,7 @@ async fn main() -> Result<()> {
                 severity.into(),
                 fail_on.into(),
                 lockfile.as_deref(),
+                granular,
             )
             .await
         }
@@ -401,8 +415,17 @@ async fn main() -> Result<()> {
             format,
             severity,
             fail_on,
+            granular,
         } => {
-            commands::diff::run(&base, &head, format.into(), severity.into(), fail_on.into()).await
+            commands::diff::run(
+                &base,
+                &head,
+                format.into(),
+                severity.into(),
+                fail_on.into(),
+                granular,
+            )
+            .await
         }
     }
 }

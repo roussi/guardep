@@ -93,8 +93,13 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
 
     let verdict_result = match resolved {
         Some(packages) => {
-            audit::evaluate_packages(&project_root, packages, guardep_core::FindingSeverity::Low)
-                .await
+            audit::evaluate_packages(
+                &project_root,
+                packages,
+                guardep_core::FindingSeverity::Low,
+                false,
+            )
+            .await
         }
         None => {
             audit::evaluate_project(&project_root, guardep_core::FindingSeverity::Low, None).await

@@ -129,6 +129,12 @@ pub struct Policy {
     /// 50ms-2s per audit depending on dep tree size. Default true.
     #[serde(default = "default_true")]
     pub source_scan_enabled: bool,
+    /// Emit one finding per call-site instead of aggregating per
+    /// (package, behavior). Default false to keep reports compact;
+    /// downstream tooling that wants byte-range granularity per hit
+    /// can opt in via `--granular` on the CLI.
+    #[serde(default)]
+    pub source_scan_granular: bool,
 
     // ── License policy ──────────────────────────────────────────────────
     /// SPDX identifiers (or expressions) to block. Matched
@@ -214,6 +220,7 @@ impl Default for Policy {
             kev_promote_to_critical: true,
             epss_promote_threshold: 0.5,
             source_scan_enabled: true,
+            source_scan_granular: false,
             license_deny: HashSet::new(),
             license_missing: Action::Warn,
             license_unidentified: Action::Warn,

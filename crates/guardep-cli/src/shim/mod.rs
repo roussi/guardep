@@ -2,19 +2,18 @@ use anyhow::Result;
 use owo_colors::OwoColorize;
 use std::path::Path;
 
+mod mvn;
 mod npm;
 
-/// Tools we currently install shims for. Maven/Gradle are intentionally
-/// excluded: they have no pre-install gate yet, and installing a
-/// passthrough shim creates false confidence that guardep is auditing
-/// invocations when in reality it isn't doing anything beyond logging.
-/// When the Maven shim is implemented, add `mvn` here AND to
-/// `install_shims::TOOLS`.
+/// Tools we currently install shims for. Gradle is intentionally
+/// excluded for now: no pre-install gate yet, and a passthrough shim
+/// creates false confidence. When the Gradle shim ships, add it here
+/// AND to `install_shims::TOOLS`.
 pub fn detect_invocation() -> Option<String> {
     let arg0 = std::env::args().next()?;
     let name = Path::new(&arg0).file_name()?.to_str()?.to_string();
     match name.as_str() {
-        "npm" | "pnpm" | "yarn" => Some(name),
+        "npm" | "pnpm" | "yarn" | "mvn" => Some(name),
         _ => None,
     }
 }
@@ -22,9 +21,10 @@ pub fn detect_invocation() -> Option<String> {
 pub async fn run(tool: &str, args: &[String]) -> Result<()> {
     match tool {
         "npm" | "pnpm" | "yarn" => npm::dispatch(tool, args).await,
+        "mvn" => mvn::dispatch(tool, args).await,
         // Stale shim from a prior install. Tell the user explicitly
         // that we're NOT auditing, then forward.
-        "mvn" | "gradle" | "gradlew" => {
+        "gradle" | "gradlew" => {
             eprintln!(
                 "{} guardep does not yet intercept {tool}. \
                  Use `guardep audit --path .` to scan the project. \

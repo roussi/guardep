@@ -39,7 +39,7 @@ impl Evaluator for SourceScanEvaluator {
         policy.source_scan_enabled
     }
 
-    async fn evaluate(&self, packages: &[PackageRef], _policy: &Policy) -> Result<Vec<Finding>> {
+    async fn evaluate(&self, packages: &[PackageRef], policy: &Policy) -> Result<Vec<Finding>> {
         // Source scanning is CPU-bound (parse + walk AST). Run packages
         // in parallel with bounded concurrency via tokio's blocking pool.
         use futures::stream::{self, StreamExt};
@@ -80,7 +80,60 @@ impl Evaluator for SourceScanEvaluator {
             if hits.is_empty() {
                 continue;
             }
-            // Group by behavior.
+            if policy.source_scan_granular {
+                // One finding per call-site. Severity stays at the
+                // base tier (no cluster promotion), since each
+                // finding represents a single occurrence.
+                for hit in hits {
+                    let severity = severity_for(hit.behavior, 1);
+                    let mut location = serde_json::json!({
+                        "file": hit.file,
+                        "line": hit.line,
+                        "note": hit.note,
+                    });
+                    if let Some((start, end)) = hit.bytes {
+                        location["bytes"] = serde_json::json!({
+                            "start": start,
+                            "end": end,
+                        });
+                    }
+                    let details = serde_json::json!({
+                        "behavior": hit.behavior.as_str(),
+                        "label": hit.behavior.label(),
+                        "occurrences": 1,
+                        "locations": [location],
+                    });
+                    let id_suffix = match hit.bytes {
+                        Some((s, _)) => format!("{}:{}", hit.file, s),
+                        None => format!("{}:{}", hit.file, hit.line),
+                    };
+                    findings.push(Finding {
+                        package: pkg.clone(),
+                        kind: FindingKind::SourceBehavior,
+                        id: format!(
+                            "behavior:{}:{}:{}",
+                            hit.behavior.as_str(),
+                            pkg.name,
+                            id_suffix
+                        ),
+                        aliases: vec![],
+                        summary: format!(
+                            "{} at {}:{} in {}",
+                            hit.behavior.label(),
+                            hit.file,
+                            hit.line,
+                            pkg.name
+                        ),
+                        severity,
+                        fixed_versions: vec![],
+                        references: vec![],
+                        details,
+                    });
+                }
+                continue;
+            }
+
+            // Default: group by behavior, one finding per (pkg, behavior).
             let mut grouped: HashMap<Behavior, Vec<BehaviorHit>> = HashMap::new();
             for hit in hits {
                 grouped.entry(hit.behavior).or_default().push(hit);

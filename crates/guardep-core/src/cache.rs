@@ -68,6 +68,22 @@ impl KvCache {
         Ok(Some(payload))
     }
 
+    /// Fetch the raw payload regardless of TTL. Useful for diff-style
+    /// detectors (e.g. new-maintainer) that want to compare a fresh
+    /// upstream snapshot against the previously cached one even when
+    /// the TTL has expired.
+    pub fn get_any(&self, namespace: &str, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().expect("kv cache mutex poisoned");
+        let row = conn
+            .query_row(
+                "SELECT payload FROM kv_cache WHERE namespace = ?1 AND key = ?2",
+                params![namespace, key],
+                |r| r.get::<_, String>(0),
+            )
+            .ok();
+        Ok(row)
+    }
+
     pub fn put(&self, namespace: &str, key: &str, payload: &str) -> Result<()> {
         let conn = self.conn.lock().expect("kv cache mutex poisoned");
         conn.execute(
