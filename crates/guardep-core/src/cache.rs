@@ -77,6 +77,38 @@ impl KvCache {
         )?;
         Ok(())
     }
+
+    /// Delete rows older than `days` and VACUUM the file. Used by
+    /// `guardep cache prune` to keep the cache from growing
+    /// monotonically as old package versions accumulate.
+    pub fn prune_older_than(&self, days: i64) -> Result<usize> {
+        let cutoff = (Utc::now() - Duration::days(days)).timestamp();
+        let conn = self.conn.lock().expect("kv cache mutex poisoned");
+        let removed = conn.execute(
+            "DELETE FROM kv_cache WHERE fetched_at < ?1",
+            params![cutoff],
+        )?;
+        // VACUUM reclaims space from deleted rows. Cheap on a few-MB
+        // file; we'd skip it on multi-GB caches but we're not there.
+        conn.execute_batch("VACUUM")?;
+        Ok(removed)
+    }
+
+    /// Total row count + on-disk size estimate. Used by `guardep info`
+    /// to surface cache health.
+    pub fn stats(&self) -> Result<CacheStats> {
+        let conn = self.conn.lock().expect("kv cache mutex poisoned");
+        let rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM kv_cache", [], |r| r.get(0))?;
+        Ok(CacheStats {
+            row_count: rows as usize,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CacheStats {
+    pub row_count: usize,
 }
 
 /// Backwards-compatible advisory cache wrapper for the OSV evaluator.

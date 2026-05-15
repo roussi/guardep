@@ -33,12 +33,14 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
     let lock_path = project_root.join("package-lock.json");
 
     // Detect explicit --no-package-lock flag (npm) — refuse to gate.
+    // Exit 1 (general error) per Unix convention; the message on
+    // stderr explains what specifically failed.
     if args.iter().any(|a| a == "--no-package-lock") {
         eprintln!(
             "{} --no-package-lock disables guardep's gate. Refusing to proceed.",
             "X".red()
         );
-        std::process::exit(5);
+        std::process::exit(1);
     }
 
     // For `npm install foo`, the existing lockfile is stale w.r.t. the
@@ -81,7 +83,7 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
             "i".cyan()
         );
         eprintln!("    npm install --package-lock-only");
-        std::process::exit(3);
+        std::process::exit(1);
     }
 
     let verdict_result = match resolved {
@@ -98,7 +100,7 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
                 "i".cyan()
             );
             if std::env::var("GUARDEP_STRICT").ok().as_deref() == Some("1") {
-                std::process::exit(4);
+                std::process::exit(1);
             }
             return run_real(tool, args);
         }

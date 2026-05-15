@@ -82,6 +82,34 @@ impl FindingsReport {
             .count()
     }
 
+    /// Provenance verification breakdown across the audit. Returns
+    /// `(missing, mismatched, trust_root_unavailable)`. Used by the
+    /// summary line so users see at a glance whether crypto
+    /// verification actually ran or was degraded.
+    pub fn provenance_breakdown(&self) -> ProvenanceBreakdown {
+        let mut out = ProvenanceBreakdown::default();
+        for s in &self.items {
+            match s.finding.kind {
+                crate::finding::FindingKind::MissingProvenance => {
+                    if s.finding.id == "provenance:trust-root-unavailable" {
+                        out.trust_root_unavailable_for = s
+                            .finding
+                            .details
+                            .get("affected_packages")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0)
+                            as usize;
+                    } else {
+                        out.missing += 1;
+                    }
+                }
+                crate::finding::FindingKind::ProvenanceMismatch => out.mismatched += 1,
+                _ => {}
+            }
+        }
+        out
+    }
+
     /// Dedup by `(package_name, package_version, finding_kind, finding_id)`.
     /// Same vulnerability can surface multiple times when one package is
     /// installed under multiple lockfile paths; we want one row.
@@ -106,6 +134,17 @@ impl FindingsReport {
     pub fn raw_count(&self) -> usize {
         self.items.len()
     }
+}
+
+/// Surface-level summary of provenance-related findings. Distinguishes
+/// "we checked and the package didn't ship provenance" (missing) from
+/// "we couldn't even run the check because the trust root was
+/// unreachable" (trust_root_unavailable_for).
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+pub struct ProvenanceBreakdown {
+    pub missing: usize,
+    pub mismatched: usize,
+    pub trust_root_unavailable_for: usize,
 }
 
 #[cfg(test)]

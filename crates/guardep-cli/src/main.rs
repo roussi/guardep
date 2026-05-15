@@ -64,6 +64,15 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum CacheCmd {
+    /// Drop entries older than `--days` (default 30) and VACUUM.
+    Prune {
+        #[arg(long, default_value_t = 30)]
+        days: i64,
+    },
+}
+
+#[derive(Subcommand)]
 enum Cmd {
     /// Audit a project against advisory DB without running install.
     Audit {
@@ -120,6 +129,9 @@ enum Cmd {
     },
     /// Print resolved cache + config locations.
     Info,
+    /// Cache management subcommands.
+    #[command(subcommand)]
+    Cache(CacheCmd),
 }
 
 #[tokio::main]
@@ -154,5 +166,6 @@ async fn main() -> Result<()> {
         Cmd::InstallShims { force } => commands::install_shims::run(force),
         Cmd::Shim { tool, args } => shim::run(&tool, &args).await,
         Cmd::Info => commands::info::run(),
+        Cmd::Cache(CacheCmd::Prune { days }) => commands::cache::prune(days),
     }
 }

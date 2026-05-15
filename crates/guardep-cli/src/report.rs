@@ -1,8 +1,10 @@
 use anyhow::Result;
 use comfy_table::{presets::UTF8_FULL, Cell, Color, Table};
 use guardep_core::{
-    Action, FindingKind, FindingSeverity, FindingsReport, ScoredFinding,
+    Action, DisplayClass, FindingSeverity, FindingsReport, ScoredFinding,
 };
+#[cfg(test)]
+use guardep_core::FindingKind;
 use owo_colors::OwoColorize;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -29,10 +31,7 @@ fn print_expanded(deduped: &[&ScoredFinding]) {
 
     for s in deduped {
         let icon = row_icon(s.action, s.finding.severity);
-        let class = class_cell(
-            class_for_finding(s.finding.kind, s.finding.severity),
-            s.finding.severity,
-        );
+        let class = class_cell(s.finding.display_class(), s.finding.severity);
         let fix = s
             .finding
             .fixed_versions
@@ -124,48 +123,12 @@ fn max_severity(items: &[&ScoredFinding]) -> FindingSeverity {
         .unwrap_or(FindingSeverity::Unknown)
 }
 
-/// Group's worst finding kind, weighted by how scary it should look in
-/// the table:
-///   confirmed-malware > heuristic-malware-Critical > everything else
-///
-/// Score-0 postinstall and Low-tier risk score do NOT escalate to the
-/// MALWARE column — they render as CVE.
-fn worst_class(items: &[&ScoredFinding]) -> Class {
-    let mut worst = Class::Cve;
-    for s in items {
-        let c = class_for_finding(s.finding.kind, s.finding.severity);
-        worst = worst.merge(c);
-    }
-    worst
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Class {
-    Cve,
-    Malware,
-}
-
-impl Class {
-    fn merge(self, other: Self) -> Self {
-        match (self, other) {
-            (Class::Malware, _) | (_, Class::Malware) => Class::Malware,
-            _ => Class::Cve,
-        }
-    }
-}
-
-fn class_for_finding(kind: FindingKind, severity: FindingSeverity) -> Class {
-    match kind {
-        FindingKind::Malware | FindingKind::ProvenanceMismatch => Class::Malware,
-        FindingKind::PostinstallScript | FindingKind::RiskScore => {
-            if severity == FindingSeverity::Critical {
-                Class::Malware
-            } else {
-                Class::Cve
-            }
-        }
-        _ => Class::Cve,
-    }
+/// Worst (most-malware-like) display class across a group's findings.
+fn worst_class(items: &[&ScoredFinding]) -> DisplayClass {
+    items
+        .iter()
+        .map(|s| s.finding.display_class())
+        .fold(DisplayClass::Cve, DisplayClass::merge)
 }
 
 /// Suggested upgrade targets for a package with N matched findings.
@@ -297,13 +260,13 @@ fn row_icon(action: Action, severity: FindingSeverity) -> Cell {
     action_icon(action)
 }
 
-fn class_cell(class: Class, severity: FindingSeverity) -> Cell {
+fn class_cell(class: DisplayClass, severity: FindingSeverity) -> Cell {
     if severity == FindingSeverity::Info {
         return Cell::new("INFO").fg(Color::Cyan);
     }
     match class {
-        Class::Malware => Cell::new("MALWARE").fg(Color::Red),
-        Class::Cve => Cell::new("CVE").fg(Color::Yellow),
+        DisplayClass::Malware => Cell::new("MALWARE").fg(Color::Red),
+        DisplayClass::Cve => Cell::new("CVE").fg(Color::Yellow),
     }
 }
 
@@ -366,6 +329,24 @@ fn print_summary(report: &FindingsReport, deduped_total: usize, collapsed: bool)
     } else {
         println!("{} clean", "OK".green().bold());
     }
+
+    // Provenance breakdown — surfaces whether crypto verification
+    // actually ran. If trust root was unavailable, this is the only
+    // place the user sees that.
+    let prov = report.provenance_breakdown();
+    if prov.trust_root_unavailable_for > 0 {
+        println!(
+            "{} provenance: {} package(s) checked with identity only (trust root unavailable)",
+            "!".yellow(),
+            prov.trust_root_unavailable_for
+        );
+    }
+    if prov.missing > 0 || prov.mismatched > 0 {
+        println!(
+            "  provenance breakdown: {} missing, {} mismatched",
+            prov.missing, prov.mismatched
+        );
+    }
 }
 
 #[derive(Serialize)]
@@ -411,7 +392,6 @@ struct JsonGroup<'a> {
     package: String,
     version: String,
     count: usize,
-    finding_ids: Vec<&'a str>,
     class: &'static str,
     severity: String,
     action: String,
@@ -421,7 +401,10 @@ struct JsonGroup<'a> {
     cross_major_fallback: Option<String>,
     breaking: bool,
     /// Per-finding details — kind, severity, references, evaluator
-    /// `details` payload. Lets CI consumers introspect a group without
+    /// `details` payload. Consumers wanting just IDs can do
+    /// `.findings | map(.finding_id)` in jq. We don't ship a
+    /// separate `finding_ids` field anymore; the data was duplicated.
+    /// Lets CI consumers introspect a group without
     /// re-running with `--format json` minus `--collapse`.
     findings: Vec<JsonGroupFinding<'a>>,
 }
@@ -468,10 +451,9 @@ pub fn print_json(report: &FindingsReport, collapse: bool) -> Result<()> {
                     package: name.to_string(),
                     version: version.to_string(),
                     count: items.len(),
-                    finding_ids: items.iter().map(|s| s.finding.id.as_str()).collect(),
                     class: match class {
-                        Class::Malware => "malware",
-                        Class::Cve => "cve",
+                        DisplayClass::Malware => "malware",
+                        DisplayClass::Cve => "cve",
                     },
                     severity: format!("{severity:?}").to_lowercase(),
                     action: format!("{action:?}").to_lowercase(),
@@ -493,9 +475,9 @@ pub fn print_json(report: &FindingsReport, collapse: bool) -> Result<()> {
                 version: &s.finding.package.version,
                 finding_id: &s.finding.id,
                 kind: s.finding.kind.as_str(),
-                class: match class_for_finding(s.finding.kind, s.finding.severity) {
-                    Class::Malware => "malware",
-                    Class::Cve => "cve",
+                class: match s.finding.display_class() {
+                    DisplayClass::Malware => "malware",
+                    DisplayClass::Cve => "cve",
                 },
                 severity: format!("{:?}", s.finding.severity).to_lowercase(),
                 action: format!("{:?}", s.action).to_lowercase(),

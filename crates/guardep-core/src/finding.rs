@@ -100,6 +100,48 @@ impl Finding {
             self.kind.as_str(),
         )
     }
+
+    /// Domain-level display class. Renderers (CLI table, JSON, future
+    /// SARIF/HTML) all share this mapping so they don't drift on what
+    /// counts as MALWARE vs CVE.
+    ///
+    /// Confirmed-malware kinds always show as MALWARE. Heuristic kinds
+    /// (postinstall script, risk score) only escalate to MALWARE at
+    /// `Critical` severity — Low/Medium hits are uncertain enough to
+    /// stay in the CVE column.
+    pub fn display_class(&self) -> DisplayClass {
+        match self.kind {
+            FindingKind::Malware | FindingKind::ProvenanceMismatch => DisplayClass::Malware,
+            FindingKind::PostinstallScript | FindingKind::RiskScore => {
+                if self.severity == FindingSeverity::Critical {
+                    DisplayClass::Malware
+                } else {
+                    DisplayClass::Cve
+                }
+            }
+            FindingKind::Vulnerability | FindingKind::MissingProvenance => DisplayClass::Cve,
+        }
+    }
+}
+
+/// What a renderer should label a finding as. Two buckets only:
+/// "MALWARE" for confirmed-bad signals, "CVE" for everything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DisplayClass {
+    Cve,
+    Malware,
+}
+
+impl DisplayClass {
+    /// Combine two classes; Malware wins. Used when collapsing many
+    /// findings for one package down to a single row.
+    pub fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (DisplayClass::Malware, _) | (_, DisplayClass::Malware) => DisplayClass::Malware,
+            _ => DisplayClass::Cve,
+        }
+    }
 }
 
 /// Trait every finding source implements. Evaluators are async because

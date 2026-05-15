@@ -14,6 +14,17 @@
 //! Why synthetic snapshots and not live npm? Live network is flaky and
 //! mutation-prone — yesterday's "fresh publish" is not fresh tomorrow.
 //! These fixtures are reproducible and deterministic.
+//!
+//! ## Honest caveat
+//!
+//! The 20-fixture set is small. F1=1.0 here means "the scoring
+//! recognizes the patterns we built it to recognize" — close to
+//! tautological. This file is a **regression fence**: if a future
+//! weight tweak inadvertently breaks the recognition of e.g.
+//! "single-maintainer + fresh-publish + no-source = High", the test
+//! catches it. It is NOT a benchmark. A real benchmark would pull
+//! ~100 anonymized historical OSV records (Shai-Hulud, Qix, axios)
+//! and measure precision/recall against them. That's roadmap.
 
 use chrono::{Duration, Utc};
 use guardep_core::ecosystem::{Ecosystem, PackageRef};
