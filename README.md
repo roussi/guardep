@@ -148,7 +148,7 @@ guardep does **not** currently defend against:
 - **Bypass via absolute path.** `/usr/local/bin/npm` skips the shim entirely.
 - **`--no-package-lock`.** Without a lockfile, the shim runs npm first and audits after, which is exactly what we are trying to avoid. Mitigation: in-progress (true dry-run resolution).
 - **Yarn lockfiles, pre-pre-Berry.** Currently parses package-lock.json only.
-- **Forged Sigstore attestations.** We verify presence, identity, the Fulcio certificate chain, and the DSSE signature. We do NOT yet verify the Rekor inclusion proof (Merkle witness) — sigstore-rs has a TODO for this upstream. An attacker who can mint a valid Fulcio cert via a real GitHub Actions workflow with a matching repository identity could still bypass guardep, which is the same threat model as the upstream Sigstore tools.
+- **Forged Sigstore attestations.** We verify presence, identity, the Fulcio certificate chain, the SCT, and the DSSE signature. We do NOT yet verify the Rekor inclusion proof (Merkle witness): the implementation [merged upstream](https://github.com/sigstore/sigstore-rs/pull/543) in Jan 2026 but isn't in a published `sigstore` crate version yet. Without the inclusion proof, an attacker who forges a bundle and bypasses public Rekor logging can still defeat the check. We pin to released crates.io versions only (no `git` deps for crypto code) and will bump as soon as the next sigstore release ships.
 - **Zero-day malware not yet in OSV** that also passes the postinstall heuristic and risk scoring.
 - **Vulnerabilities in code your team writes.** Use SAST/DAST.
 - **Container base image vulnerabilities.** Use Trivy.
@@ -171,7 +171,7 @@ guardep does **not** currently defend against:
 - [ ] **True pre-install resolution.** Use `npm install --dry-run --json` to audit the *intended* graph instead of the existing lockfile. Eliminates the "new package bypasses audit" gap.
 - [ ] **AST-based postinstall analysis.** Replace regex heuristic with `swc_ecma_parser`. Real comment / string-literal awareness.
 - [x] **Sigstore crypto verification.** Fulcio cert chain, DSSE signature, SCT, Identity policy bound to GitHub Actions OIDC issuer.
-- [ ] **Rekor inclusion proof.** Pending upstream support in `sigstore-rs`.
+- [ ] **Rekor inclusion proof.** Implementation merged upstream in [sigstore-rs#543](https://github.com/sigstore/sigstore-rs/pull/543) (Jan 2026) but not yet released to crates.io. We're pinned to `sigstore = "0.13"` (the latest release) which still skips the proof. Will bump to 0.14 (or whatever ships the merge) and flip `offline=false` once it's published.
 - [ ] **Maven resolver.**
 - [ ] **Gradle resolver.**
 - [ ] **GitHub Action wrapper.**
