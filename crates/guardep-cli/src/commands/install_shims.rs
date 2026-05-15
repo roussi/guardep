@@ -225,10 +225,7 @@ fn detect_rc_files() -> Vec<RcTarget> {
             (home.join(".zshrc"), RcKind::PosixShell),
             (home.join(".bashrc"), RcKind::PosixShell),
             (home.join(".bash_profile"), RcKind::PosixShell),
-            (
-                home.join(".config/fish/config.fish"),
-                RcKind::Fish,
-            ),
+            (home.join(".config/fish/config.fish"), RcKind::Fish),
         ];
         for (path, kind) in candidates {
             if path.exists() {
@@ -353,9 +350,8 @@ fn backup_once(rc: &Path) -> Result<()> {
     backup.push(".guardep.bak");
     let backup_path = PathBuf::from(backup);
     if !backup_path.exists() && rc.exists() {
-        fs::copy(rc, &backup_path).with_context(|| {
-            format!("backup {} to {}", rc.display(), backup_path.display())
-        })?;
+        fs::copy(rc, &backup_path)
+            .with_context(|| format!("backup {} to {}", rc.display(), backup_path.display()))?;
     }
     Ok(())
 }

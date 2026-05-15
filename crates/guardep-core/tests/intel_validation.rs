@@ -33,8 +33,7 @@ use guardep_core::intel::{score_package_for_test, IntelSnapshot};
 use guardep_core::policy::Policy;
 
 fn rfc3339_days_ago(days: i64) -> String {
-    (Utc::now() - Duration::days(days))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    (Utc::now() - Duration::days(days)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 fn pkg(name: &str, version: &str) -> PackageRef {

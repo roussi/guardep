@@ -86,9 +86,7 @@ pub struct ProvenanceEvaluator {
     /// a single audit. `None` when initialisation failed (offline,
     /// TUF outage). When `None`, packages still get presence + identity
     /// checking with a clear "crypto: not verified" annotation.
-    trust_root: tokio::sync::OnceCell<
-        Option<Arc<sigstore::bundle::verify::Verifier>>,
-    >,
+    trust_root: tokio::sync::OnceCell<Option<Arc<sigstore::bundle::verify::Verifier>>>,
 }
 
 impl ProvenanceEvaluator {
@@ -263,10 +261,9 @@ impl ProvenanceEvaluator {
         let repo_field = body.get("repository");
         let url_str = match repo_field {
             Some(serde_json::Value::String(s)) => Some(s.clone()),
-            Some(serde_json::Value::Object(obj)) => obj
-                .get("url")
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            Some(serde_json::Value::Object(obj)) => {
+                obj.get("url").and_then(|v| v.as_str()).map(String::from)
+            }
             _ => None,
         };
 
@@ -308,20 +305,20 @@ impl ProvenanceEvaluator {
         tarball_bytes: &[u8],
         expected_repo: &str,
     ) -> Result<()> {
-        let bundle: sigstore::bundle::Bundle = serde_json::from_value(bundle_json.clone())
-            .context("parse Sigstore Bundle JSON")?;
+        let bundle: sigstore::bundle::Bundle =
+            serde_json::from_value(bundle_json.clone()).context("parse Sigstore Bundle JSON")?;
 
         // Identity policy: any workflow under <expected_repo>, signed by
         // the GitHub Actions OIDC issuer. We use a regex-anchored prefix
         // so workflow file path and ref are flexible (npm's published
         // attestations don't pin them).
         let expected_normalized = normalize_repo(expected_repo);
-        let identity_pattern =
-            format!("https://github.com/{}/", strip_github_prefix(&expected_normalized));
-        let policy = sigstore::bundle::verify::policy::Identity::new(
-            identity_pattern,
-            GITHUB_OIDC_ISSUER,
+        let identity_pattern = format!(
+            "https://github.com/{}/",
+            strip_github_prefix(&expected_normalized)
         );
+        let policy =
+            sigstore::bundle::verify::policy::Identity::new(identity_pattern, GITHUB_OIDC_ISSUER);
 
         // The verifier hashes the input itself; offline=true skips the
         // online Rekor inclusion-proof check (sigstore-rs marks that
@@ -343,11 +340,7 @@ impl Evaluator for ProvenanceEvaluator {
         !policy.require_provenance.is_empty()
     }
 
-    async fn evaluate(
-        &self,
-        packages: &[PackageRef],
-        policy: &Policy,
-    ) -> Result<Vec<Finding>> {
+    async fn evaluate(&self, packages: &[PackageRef], policy: &Policy) -> Result<Vec<Finding>> {
         use futures::stream::{self, StreamExt};
         const FETCH_CONCURRENCY: usize = 8;
 
@@ -355,9 +348,7 @@ impl Evaluator for ProvenanceEvaluator {
 
         let targets: Vec<&PackageRef> = packages
             .iter()
-            .filter(|pkg| {
-                pkg.ecosystem == Ecosystem::Npm && policy.requires_provenance(&pkg.name)
-            })
+            .filter(|pkg| pkg.ecosystem == Ecosystem::Npm && policy.requires_provenance(&pkg.name))
             .collect();
         if targets.is_empty() {
             return Ok(Vec::new());
@@ -404,7 +395,7 @@ impl Evaluator for ProvenanceEvaluator {
 
         // Phase 4: emit findings.
         let mut findings = Vec::new();
-        for (pkg, entry) in from_cache.into_iter().chain(fetched.into_iter()) {
+        for (pkg, entry) in from_cache.into_iter().chain(fetched) {
             findings.extend(self.entry_to_findings(&pkg, &entry));
         }
 
@@ -726,8 +717,7 @@ mod tests {
                 }
             }
         });
-        let payload_b64 =
-            base64::engine::general_purpose::STANDARD.encode(intoto.to_string());
+        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(intoto.to_string());
         json!({
             "attestations": [{
                 "predicateType": "https://slsa.dev/provenance/v1",
@@ -776,7 +766,10 @@ mod tests {
             normalize_repo("git@github.com:owner/repo.git"),
             "github.com/owner/repo"
         );
-        assert_eq!(normalize_repo("github.com/owner/repo"), "github.com/owner/repo");
+        assert_eq!(
+            normalize_repo("github.com/owner/repo"),
+            "github.com/owner/repo"
+        );
     }
 
     #[test]
@@ -798,8 +791,7 @@ mod tests {
             .mount(&server)
             .await;
         let dir = TempDir::new().unwrap();
-        let ev =
-            ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
+        let ev = ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
         let mut policy = Policy::default();
         policy.require_provenance.push("*".into());
         let pkgs = vec![PackageRef::new(Ecosystem::Cargo, "tokio", "1.0.0")];
@@ -816,8 +808,7 @@ mod tests {
             .mount(&server)
             .await;
         let dir = TempDir::new().unwrap();
-        let ev =
-            ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
+        let ev = ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
         let mut policy = Policy::default();
         policy.require_provenance.push("react".into());
         // pkg name doesn't match policy glob -> no fetch, no finding
@@ -835,8 +826,7 @@ mod tests {
             .mount(&server)
             .await;
         let dir = TempDir::new().unwrap();
-        let ev =
-            ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
+        let ev = ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
         let mut policy = Policy::default();
         policy.require_provenance.push("foo".into());
         let pkgs = vec![npm_pkg("foo", "1.0.0")];
@@ -859,11 +849,10 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/foo"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(build_metadata_json(
-                        Some("git+https://github.com/alice/foo.git"),
-                        &format!("{}/foo/-/foo-1.0.0.tgz", server.uri()),
-                    )),
+                ResponseTemplate::new(200).set_body_json(build_metadata_json(
+                    Some("git+https://github.com/alice/foo.git"),
+                    &format!("{}/foo/-/foo-1.0.0.tgz", server.uri()),
+                )),
             )
             .mount(&server)
             .await;
@@ -875,8 +864,7 @@ mod tests {
             .mount(&server)
             .await;
         let dir = TempDir::new().unwrap();
-        let ev =
-            ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
+        let ev = ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
         let mut policy = Policy::default();
         policy.require_provenance.push("foo".into());
         let pkgs = vec![npm_pkg("foo", "1.0.0")];
@@ -904,17 +892,15 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/foo"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(build_metadata_json(
-                        Some("https://github.com/alice/foo"),
-                        &format!("{}/foo/-/foo-1.0.0.tgz", server.uri()),
-                    )),
+                ResponseTemplate::new(200).set_body_json(build_metadata_json(
+                    Some("https://github.com/alice/foo"),
+                    &format!("{}/foo/-/foo-1.0.0.tgz", server.uri()),
+                )),
             )
             .mount(&server)
             .await;
         let dir = TempDir::new().unwrap();
-        let ev =
-            ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
+        let ev = ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
         let mut policy = Policy::default();
         policy.require_provenance.push("foo".into());
         let pkgs = vec![npm_pkg("foo", "1.0.0")];
@@ -922,12 +908,9 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].kind, FindingKind::ProvenanceMismatch);
         assert_eq!(findings[0].severity, FindingSeverity::Critical);
-        assert_eq!(
-            findings[0].details["crypto_verified"]
-                .as_bool()
-                .unwrap_or(true),
-            false
-        );
+        assert!(!findings[0].details["crypto_verified"]
+            .as_bool()
+            .unwrap_or(true));
     }
 
     #[tokio::test]
@@ -940,8 +923,7 @@ mod tests {
             .mount(&server)
             .await;
         let dir = TempDir::new().unwrap();
-        let ev =
-            ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
+        let ev = ProvenanceEvaluator::with_base_url(cache_path(&dir), server.uri()).unwrap();
         let mut policy = Policy::default();
         policy.require_provenance.push("foo".into());
         let pkgs = vec![npm_pkg("foo", "1.0.0")];

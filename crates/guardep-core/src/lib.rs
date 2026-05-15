@@ -18,8 +18,6 @@ pub mod resolver;
 pub use advisory::{Advisory, Severity, ThreatClass};
 pub use ecosystem::{Ecosystem, PackageRef};
 pub use evaluator::{evaluate_all, EvaluatorRegistry};
-pub use finding::{
-    decide_action, DisplayClass, Evaluator, Finding, FindingKind, FindingSeverity,
-};
+pub use finding::{decide_action, DisplayClass, Evaluator, Finding, FindingKind, FindingSeverity};
 pub use policy::{Action, Policy};
 pub use report_data::{FindingsReport, ProvenanceBreakdown, ScoredFinding};

@@ -54,7 +54,9 @@ impl Resolver for NpmLockResolver {
                         .unwrap_or(&path)
                         .to_string()
                 });
-                let Some(version) = entry.version else { continue };
+                let Some(version) = entry.version else {
+                    continue;
+                };
                 out.insert(PackageRef::new(Ecosystem::Npm, name, version));
             }
         }
@@ -98,9 +100,7 @@ impl Resolver for PnpmLockResolver {
             };
             let Some(key) = rest.strip_suffix(':') else {
                 // Some pnpm versions use single-quoted keys: `  '/name@1.0(peer)':`
-                let Some(stripped) = rest
-                    .strip_prefix('\'')
-                    .and_then(|s| s.strip_suffix("':"))
+                let Some(stripped) = rest.strip_prefix('\'').and_then(|s| s.strip_suffix("':"))
                 else {
                     continue;
                 };
@@ -303,7 +303,11 @@ pub fn auto_resolve(project_root: &Path) -> Result<(Vec<PackageRef>, &'static st
 pub fn resolve_with(project_root: &Path, lockfile: &str) -> Result<Vec<PackageRef>> {
     let path = project_root.join(lockfile);
     if !path.exists() {
-        anyhow::bail!("lockfile {} not found in {}", lockfile, project_root.display());
+        anyhow::bail!(
+            "lockfile {} not found in {}",
+            lockfile,
+            project_root.display()
+        );
     }
     let resolver: Box<dyn Resolver> = match lockfile {
         "package-lock.json" => Box::new(NpmLockResolver),
@@ -413,8 +417,12 @@ mod tests {
         );
         let pkgs = YarnLockResolver.resolve(dir.path()).unwrap();
         assert_eq!(pkgs.len(), 2);
-        assert!(pkgs.iter().any(|p| p.name == "react" && p.version == "18.2.0"));
-        assert!(pkgs.iter().any(|p| p.name == "@scope/pkg" && p.version == "1.0.5"));
+        assert!(pkgs
+            .iter()
+            .any(|p| p.name == "react" && p.version == "18.2.0"));
+        assert!(pkgs
+            .iter()
+            .any(|p| p.name == "@scope/pkg" && p.version == "1.0.5"));
     }
 
     #[test]
@@ -429,7 +437,9 @@ mod tests {
              resolution: \"react@npm:18.2.0\"\n",
         );
         let pkgs = YarnLockResolver.resolve(dir.path()).unwrap();
-        assert!(pkgs.iter().any(|p| p.name == "react" && p.version == "18.2.0"));
+        assert!(pkgs
+            .iter()
+            .any(|p| p.name == "react" && p.version == "18.2.0"));
     }
 
     #[test]

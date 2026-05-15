@@ -8,6 +8,9 @@ license.workspace = true
 name = "guardep"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 guardep-core = { path = "../guardep-core" }
 anyhow.workspace = true

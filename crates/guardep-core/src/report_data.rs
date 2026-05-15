@@ -54,11 +54,17 @@ impl FindingsReport {
     }
 
     pub fn count_blocks(&self) -> usize {
-        self.items.iter().filter(|s| s.action == Action::Block).count()
+        self.items
+            .iter()
+            .filter(|s| s.action == Action::Block)
+            .count()
     }
 
     pub fn count_warnings(&self) -> usize {
-        self.items.iter().filter(|s| s.action == Action::Warn).count()
+        self.items
+            .iter()
+            .filter(|s| s.action == Action::Warn)
+            .count()
     }
 
     pub fn count_malware(&self) -> usize {
@@ -85,13 +91,12 @@ impl FindingsReport {
             match s.finding.kind {
                 crate::finding::FindingKind::MissingProvenance => {
                     if s.finding.id == "provenance:trust-root-unavailable" {
-                        out.trust_root_unavailable_for = s
-                            .finding
-                            .details
-                            .get("affected_packages")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0)
-                            as usize;
+                        out.trust_root_unavailable_for =
+                            s.finding
+                                .details
+                                .get("affected_packages")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize;
                     } else {
                         out.missing += 1;
                     }
@@ -165,7 +170,12 @@ mod tests {
 
     #[test]
     fn malware_critical_blocks_by_default() {
-        let f = make_finding("x", "1.0.0", FindingKind::Malware, FindingSeverity::Critical);
+        let f = make_finding(
+            "x",
+            "1.0.0",
+            FindingKind::Malware,
+            FindingSeverity::Critical,
+        );
         let r = FindingsReport::from_findings(vec![f], &Policy::default());
         assert!(r.should_block());
         assert_eq!(r.count_blocks(), 1);
@@ -209,9 +219,19 @@ mod tests {
         policy.min_display_severity = FindingSeverity::High;
         let findings = vec![
             make_finding("a", "1", FindingKind::Vulnerability, FindingSeverity::Low),
-            make_finding("b", "1", FindingKind::Vulnerability, FindingSeverity::Medium),
+            make_finding(
+                "b",
+                "1",
+                FindingKind::Vulnerability,
+                FindingSeverity::Medium,
+            ),
             make_finding("c", "1", FindingKind::Vulnerability, FindingSeverity::High),
-            make_finding("d", "1", FindingKind::Vulnerability, FindingSeverity::Critical),
+            make_finding(
+                "d",
+                "1",
+                FindingKind::Vulnerability,
+                FindingSeverity::Critical,
+            ),
         ];
         let r = FindingsReport::from_findings(findings, &policy);
         assert_eq!(r.items.len(), 2, "only High + Critical should remain");
@@ -223,8 +243,18 @@ mod tests {
         policy.min_display_severity = FindingSeverity::Info;
         let findings = vec![
             make_finding("z", "1", FindingKind::Vulnerability, FindingSeverity::Low),
-            make_finding("a", "1", FindingKind::Vulnerability, FindingSeverity::Critical),
-            make_finding("m", "1", FindingKind::Vulnerability, FindingSeverity::Medium),
+            make_finding(
+                "a",
+                "1",
+                FindingKind::Vulnerability,
+                FindingSeverity::Critical,
+            ),
+            make_finding(
+                "m",
+                "1",
+                FindingKind::Vulnerability,
+                FindingSeverity::Medium,
+            ),
             make_finding("k", "1", FindingKind::Vulnerability, FindingSeverity::High),
         ];
         let r = FindingsReport::from_findings(findings, &policy);
@@ -238,7 +268,12 @@ mod tests {
 
     #[test]
     fn dedup_collapses_duplicate_finding() {
-        let f1 = make_finding("x", "1.0.0", FindingKind::Vulnerability, FindingSeverity::High);
+        let f1 = make_finding(
+            "x",
+            "1.0.0",
+            FindingKind::Vulnerability,
+            FindingSeverity::High,
+        );
         let f2 = f1.clone();
         let r = FindingsReport::from_findings(vec![f1, f2], &Policy::default());
         assert_eq!(r.raw_count(), 2);

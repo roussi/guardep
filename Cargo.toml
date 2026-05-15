@@ -42,3 +42,11 @@ swc_ecma_visit = "23"
 indicatif = "0.17"
 supports-color = "3"
 similar = "2"
+
+# Project-wide clippy posture. CI runs `cargo clippy -- -D warnings`,
+# so anything we explicitly allow here keeps the build green when the
+# noise isn't worth fixing right now.
+[workspace.lints.clippy]
+field_reassign_with_default = "allow"   # tests build a mutable `Policy::default()` then tweak one field; idiomatic for test setup
+items_after_test_module = "allow"       # `resolver.rs` keeps NpmDryRunResolver after the test mod for module locality
+type_complexity = "allow"               # one nested generic in install_shims that's clearer inline than as a type alias

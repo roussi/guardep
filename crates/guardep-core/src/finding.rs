@@ -153,7 +153,11 @@ pub trait Evaluator: Send + Sync {
     /// so an audit run can skip wiring an evaluator entirely when the
     /// user disabled it.
     fn enabled(&self, policy: &Policy) -> bool;
-    async fn evaluate(&self, packages: &[PackageRef], policy: &Policy) -> anyhow::Result<Vec<Finding>>;
+    async fn evaluate(
+        &self,
+        packages: &[PackageRef],
+        policy: &Policy,
+    ) -> anyhow::Result<Vec<Finding>>;
 }
 
 /// Apply policy to assign an [`Action`] to a finding. Allowlist check is

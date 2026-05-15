@@ -1,0 +1,127 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install cross (Linux aarch64 only)
+        if: matrix.cross == true
+        run: cargo install cross --locked
+
+      - name: Build with cargo
+        if: matrix.cross != true
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --target "$TARGET" --bin guardep
+        shell: bash
+
+      - name: Build with cross
+        if: matrix.cross == true
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cross build --release --target "$TARGET" --bin guardep
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          STAGING="guardep-${TAG}-${TARGET}"
+          mkdir -p "$STAGING"
+          cp "target/${TARGET}/release/guardep" "$STAGING/"
+          cp README.md LICENSE "$STAGING/"
+          tar -czf "$STAGING.tar.gz" "$STAGING"
+          shasum -a 256 "$STAGING.tar.gz" > "$STAGING.tar.gz.sha256"
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $staging = "guardep-$env:TAG-$env:TARGET"
+          New-Item -ItemType Directory -Path $staging | Out-Null
+          Copy-Item "target/$env:TARGET/release/guardep.exe" $staging
+          Copy-Item README.md, LICENSE $staging
+          Compress-Archive -Path $staging -DestinationPath "$staging.zip"
+          (Get-FileHash "$staging.zip" -Algorithm SHA256).Hash | Out-File "$staging.zip.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardep-${{ matrix.target }}
+          path: |
+            guardep-*.tar.gz
+            guardep-*.tar.gz.sha256
+            guardep-*.zip
+            guardep-*.zip.sha256
+          if-no-files-found: error
+
+  publish:
+    name: publish github release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/guardep-*.tar.gz
+            dist/guardep-*.tar.gz.sha256
+            dist/guardep-*.zip
+            dist/guardep-*.zip.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -23,85 +23,282 @@ use std::path::PathBuf;
 /// recognised as legitimate rather than typosquat candidates.
 const TOP_PACKAGES: &[&str] = &[
     // Core runtime / utility
-    "react", "react-dom", "lodash", "axios", "express", "chalk",
-    "commander", "debug", "moment", "request", "tslib", "semver",
-    "glob", "async", "uuid", "dotenv", "typescript", "jest", "eslint",
-    "prettier", "webpack", "babel-core", "mocha", "underscore", "jquery",
-    "bluebird", "body-parser", "mongoose", "cors", "fs-extra",
+    "react",
+    "react-dom",
+    "lodash",
+    "axios",
+    "express",
+    "chalk",
+    "commander",
+    "debug",
+    "moment",
+    "request",
+    "tslib",
+    "semver",
+    "glob",
+    "async",
+    "uuid",
+    "dotenv",
+    "typescript",
+    "jest",
+    "eslint",
+    "prettier",
+    "webpack",
+    "babel-core",
+    "mocha",
+    "underscore",
+    "jquery",
+    "bluebird",
+    "body-parser",
+    "mongoose",
+    "cors",
+    "fs-extra",
     // Build tooling
-    "vite", "rollup", "esbuild", "parcel", "gulp", "grunt", "browserify",
-    "ts-node", "tsx", "swc", "rspack", "tsup", "tsdown",
+    "vite",
+    "rollup",
+    "esbuild",
+    "parcel",
+    "gulp",
+    "grunt",
+    "browserify",
+    "ts-node",
+    "tsx",
+    "swc",
+    "rspack",
+    "tsup",
+    "tsdown",
     // React ecosystem
-    "react-router", "react-router-dom", "redux", "react-redux",
-    "next", "gatsby", "remix", "vue", "vue-router", "vuex", "pinia",
-    "svelte", "angular", "preact", "solid-js",
+    "react-router",
+    "react-router-dom",
+    "redux",
+    "react-redux",
+    "next",
+    "gatsby",
+    "remix",
+    "vue",
+    "vue-router",
+    "vuex",
+    "pinia",
+    "svelte",
+    "angular",
+    "preact",
+    "solid-js",
     // HTTP / async
-    "node-fetch", "got", "ky", "superagent", "isomorphic-fetch",
-    "ws", "socket.io", "socket.io-client", "engine.io",
+    "node-fetch",
+    "got",
+    "ky",
+    "superagent",
+    "isomorphic-fetch",
+    "ws",
+    "socket.io",
+    "socket.io-client",
+    "engine.io",
     // Test frameworks
-    "jest", "vitest", "mocha", "chai", "sinon", "ava", "tap", "tape",
-    "cypress", "playwright", "puppeteer", "karma", "jasmine",
-    "@testing-library/react", "@testing-library/jest-dom", "supertest",
+    "jest",
+    "vitest",
+    "mocha",
+    "chai",
+    "sinon",
+    "ava",
+    "tap",
+    "tape",
+    "cypress",
+    "playwright",
+    "puppeteer",
+    "karma",
+    "jasmine",
+    "@testing-library/react",
+    "@testing-library/jest-dom",
+    "supertest",
     // Linters / formatters
-    "eslint", "prettier", "stylelint", "tslint", "biome", "rome",
-    "@typescript-eslint/parser", "@typescript-eslint/eslint-plugin",
+    "eslint",
+    "prettier",
+    "stylelint",
+    "tslint",
+    "biome",
+    "rome",
+    "@typescript-eslint/parser",
+    "@typescript-eslint/eslint-plugin",
     // Bundler plugins
-    "webpack-cli", "webpack-dev-server", "html-webpack-plugin",
-    "mini-css-extract-plugin", "css-loader", "style-loader",
-    "babel-loader", "ts-loader", "file-loader", "postcss-loader",
-    "@babel/core", "@babel/preset-env", "@babel/preset-react",
-    "@babel/preset-typescript", "@babel/runtime",
+    "webpack-cli",
+    "webpack-dev-server",
+    "html-webpack-plugin",
+    "mini-css-extract-plugin",
+    "css-loader",
+    "style-loader",
+    "babel-loader",
+    "ts-loader",
+    "file-loader",
+    "postcss-loader",
+    "@babel/core",
+    "@babel/preset-env",
+    "@babel/preset-react",
+    "@babel/preset-typescript",
+    "@babel/runtime",
     // CSS
-    "tailwindcss", "postcss", "autoprefixer", "sass", "less", "stylus",
-    "styled-components", "emotion", "@emotion/react", "@emotion/styled",
+    "tailwindcss",
+    "postcss",
+    "autoprefixer",
+    "sass",
+    "less",
+    "stylus",
+    "styled-components",
+    "emotion",
+    "@emotion/react",
+    "@emotion/styled",
     // Server frameworks
-    "fastify", "koa", "hapi", "nest", "@nestjs/core", "@nestjs/common",
-    "express-session", "passport", "jsonwebtoken", "bcrypt", "bcryptjs",
+    "fastify",
+    "koa",
+    "hapi",
+    "nest",
+    "@nestjs/core",
+    "@nestjs/common",
+    "express-session",
+    "passport",
+    "jsonwebtoken",
+    "bcrypt",
+    "bcryptjs",
     // Date / utility
-    "date-fns", "dayjs", "luxon", "rxjs", "ramda",
+    "date-fns",
+    "dayjs",
+    "luxon",
+    "rxjs",
+    "ramda",
     // Validation
-    "zod", "yup", "joi", "ajv", "validator", "class-validator",
+    "zod",
+    "yup",
+    "joi",
+    "ajv",
+    "validator",
+    "class-validator",
     // Database
-    "pg", "mysql", "mysql2", "sqlite3", "redis", "ioredis", "knex",
-    "prisma", "@prisma/client", "sequelize", "typeorm", "mongodb",
+    "pg",
+    "mysql",
+    "mysql2",
+    "sqlite3",
+    "redis",
+    "ioredis",
+    "knex",
+    "prisma",
+    "@prisma/client",
+    "sequelize",
+    "typeorm",
+    "mongodb",
     // Files / streams
-    "fs-extra", "graceful-fs", "rimraf", "del", "globby", "fast-glob",
-    "minimatch", "chokidar", "tar", "archiver", "unzipper",
+    "fs-extra",
+    "graceful-fs",
+    "rimraf",
+    "del",
+    "globby",
+    "fast-glob",
+    "minimatch",
+    "chokidar",
+    "tar",
+    "archiver",
+    "unzipper",
     // CLI tooling
-    "yargs", "minimist", "inquirer", "ora", "boxen", "figlet", "cli-table",
+    "yargs",
+    "minimist",
+    "inquirer",
+    "ora",
+    "boxen",
+    "figlet",
+    "cli-table",
     // Process / utilities
-    "execa", "shelljs", "cross-spawn", "spawn-async", "node-pty",
-    "dotenv-cli", "concurrently", "npm-run-all", "wait-on",
+    "execa",
+    "shelljs",
+    "cross-spawn",
+    "spawn-async",
+    "node-pty",
+    "dotenv-cli",
+    "concurrently",
+    "npm-run-all",
+    "wait-on",
     // AST / parsing
-    "acorn", "espree", "esprima", "babel-parser", "@babel/parser",
-    "esbuild-wasm", "estree-walker", "magic-string",
+    "acorn",
+    "espree",
+    "esprima",
+    "babel-parser",
+    "@babel/parser",
+    "esbuild-wasm",
+    "estree-walker",
+    "magic-string",
     // Logging
-    "winston", "bunyan", "pino", "morgan", "log4js",
+    "winston",
+    "bunyan",
+    "pino",
+    "morgan",
+    "log4js",
     // GraphQL
-    "graphql", "apollo-server", "@apollo/client", "graphql-tag",
+    "graphql",
+    "apollo-server",
+    "@apollo/client",
+    "graphql-tag",
     // Mocking / fixtures
-    "nock", "msw", "faker", "@faker-js/faker", "casual",
+    "nock",
+    "msw",
+    "faker",
+    "@faker-js/faker",
+    "casual",
     // Markdown / parsing
-    "marked", "markdown-it", "remark", "rehype", "highlight.js",
-    "shiki", "prismjs",
+    "marked",
+    "markdown-it",
+    "remark",
+    "rehype",
+    "highlight.js",
+    "shiki",
+    "prismjs",
     // Misc heavy hitters
-    "qs", "querystring", "form-data", "mime", "mime-types",
-    "colors", "kleur", "picocolors", "ansi-colors", "ansi-styles",
-    "strip-ansi", "wrap-ansi", "string-width",
-    "deep-equal", "deepmerge", "lodash.merge", "lodash.get",
-    "object-assign", "extend", "merge-descriptors",
-    "uuid", "nanoid", "shortid", "cuid",
+    "qs",
+    "querystring",
+    "form-data",
+    "mime",
+    "mime-types",
+    "colors",
+    "kleur",
+    "picocolors",
+    "ansi-colors",
+    "ansi-styles",
+    "strip-ansi",
+    "wrap-ansi",
+    "string-width",
+    "deep-equal",
+    "deepmerge",
+    "lodash.merge",
+    "lodash.get",
+    "object-assign",
+    "extend",
+    "merge-descriptors",
+    "uuid",
+    "nanoid",
+    "shortid",
+    "cuid",
     // Crypto / parsing
-    "asn1", "asn1.js", "tweetnacl", "node-forge", "crypto-js",
-    "bn.js", "elliptic", "hash.js", "sha.js",
+    "asn1",
+    "asn1.js",
+    "tweetnacl",
+    "node-forge",
+    "crypto-js",
+    "bn.js",
+    "elliptic",
+    "hash.js",
+    "sha.js",
     // Iconography / fonts
-    "lucide", "lucide-react", "lucide-vue-next", "react-icons",
-    "@fortawesome/fontawesome-free", "feather-icons",
+    "lucide",
+    "lucide-react",
+    "lucide-vue-next",
+    "react-icons",
+    "@fortawesome/fontawesome-free",
+    "feather-icons",
     // Bundlers' workspace deps
-    "rollup-plugin-typescript2", "@rollup/plugin-node-resolve",
-    "@rollup/plugin-commonjs", "vite-plugin-vue",
+    "rollup-plugin-typescript2",
+    "@rollup/plugin-node-resolve",
+    "@rollup/plugin-commonjs",
+    "vite-plugin-vue",
     // Worker / concurrency
-    "worker-threads", "piscina", "comlink",
+    "worker-threads",
+    "piscina",
+    "comlink",
 ];
 
 /// Substring exclusions: when a candidate name CONTAINS a top-pkg name
@@ -192,11 +389,7 @@ impl IntelEvaluator {
         Ok(Some(serde_json::from_str(&payload)?))
     }
 
-    fn cache_put(
-        cache: &crate::cache::KvCache,
-        package: &str,
-        snap: &IntelSnapshot,
-    ) -> Result<()> {
+    fn cache_put(cache: &crate::cache::KvCache, package: &str, snap: &IntelSnapshot) -> Result<()> {
         let payload = serde_json::to_string(snap)?;
         cache.put("intel", package, &payload)
     }
@@ -226,7 +419,11 @@ impl IntelEvaluator {
     }
 
     async fn fetch_weekly_downloads(&self, name: &str) -> Result<u64> {
-        let url = format!("{}/downloads/point/last-week/{}", self.downloads_base_url(), name);
+        let url = format!(
+            "{}/downloads/point/last-week/{}",
+            self.downloads_base_url(),
+            name
+        );
         let resp = self.http.get(&url).send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("downloads API returned {}", resp.status());
@@ -485,7 +682,7 @@ fn score_package(
         .as_deref()
         .and_then(|ts| days_since(ts, now));
     if let Some(days) = latest_published_days_ago {
-        if days >= 0 && days < 1 {
+        if (0..1).contains(&days) {
             score += 5;
             reasons.push("very-fresh-latest".into());
         }
@@ -497,8 +694,7 @@ fn score_package(
     // weak signal, so we emit it at `Info` and let the display
     // threshold filter it out. Users who lower `--severity info` still
     // see it; everyone else doesn't.
-    let only_reason_is_single_maintainer =
-        reasons.len() == 1 && reasons[0] == "single-maintainer";
+    let only_reason_is_single_maintainer = reasons.len() == 1 && reasons[0] == "single-maintainer";
 
     let mut severity = if only_reason_is_single_maintainer {
         FindingSeverity::Info
@@ -512,10 +708,11 @@ fn score_package(
         }
     };
 
-    if policy.block_typosquats && reasons.iter().any(|r| r == "typosquat") {
-        if (severity as u8) < (FindingSeverity::High as u8) {
-            severity = FindingSeverity::High;
-        }
+    if policy.block_typosquats
+        && reasons.iter().any(|r| r == "typosquat")
+        && (severity as u8) < (FindingSeverity::High as u8)
+    {
+        severity = FindingSeverity::High;
     }
 
     let primary = primary_reason(&reasons).to_string();
@@ -574,7 +771,11 @@ pub(crate) fn lev_distance(a: &str, b: &str) -> usize {
     for i in 1..=la {
         curr[0] = i;
         for j in 1..=lb {
-            let cost = if a_bytes[i - 1] == b_bytes[j - 1] { 0 } else { 1 };
+            let cost = if a_bytes[i - 1] == b_bytes[j - 1] {
+                0
+            } else {
+                1
+            };
             let del = prev[j] + 1;
             let ins = curr[j - 1] + 1;
             let sub = prev[j - 1] + cost;
@@ -605,13 +806,13 @@ fn typosquat_candidate(name: &str) -> Option<&'static str> {
     if name.starts_with('@') {
         return None;
     }
-    if TOP_PACKAGES.iter().any(|t| *t == name) {
+    if TOP_PACKAGES.contains(&name) {
         return None;
     }
     let max_d = max_distance_for(name.len());
     for top in TOP_PACKAGES {
         // Names with very different lengths can't be typo-related.
-        if (top.len() as i64 - name.len() as i64).abs() as usize > max_d {
+        if (top.len() as i64 - name.len() as i64).unsigned_abs() as usize > max_d {
             continue;
         }
         // Skip when the candidate is a legit relative of `top`
@@ -769,15 +970,7 @@ mod tests {
 
         // 80 -> Critical: 25 + 30 (typosquat) + 15 + 10 = 80. Use a
         // typosquat name to land exactly there.
-        let snap_80 = make_snapshot(
-            1,
-            3,
-            None,
-            None,
-            None,
-            None,
-            false,
-        );
+        let snap_80 = make_snapshot(1, 3, None, None, None, None, false);
         // loadsh: typosquat (+30), single-maintainer (+25), few-versions (+15), no-source (+10) = 80
         let pkg = npm("loadsh", "1.0.0");
         let f = score_package(&pkg, &snap_80, &policy, None).expect("emit");
@@ -787,15 +980,7 @@ mod tests {
         // single-maintainer (25) + few-versions (15) + abandoned (15) + no-source (10) = 65
         let old = (Utc::now() - Duration::days(policy.warn_if_unmaintained_days as i64 + 30))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        let snap_65 = make_snapshot(
-            1,
-            3,
-            None,
-            Some(old.clone()),
-            None,
-            None,
-            false,
-        );
+        let snap_65 = make_snapshot(1, 3, None, Some(old.clone()), None, None, false);
         let pkg = npm("safepkgname", "1.0.0");
         let f = score_package(&pkg, &snap_65, &policy, None).expect("emit");
         assert_eq!(f.severity, FindingSeverity::High);
@@ -970,10 +1155,7 @@ mod tests {
             "expected at least High, got {:?}",
             findings[0].severity
         );
-        assert_eq!(
-            findings[0].details["typosquat_of"].as_str(),
-            Some("lodash")
-        );
+        assert_eq!(findings[0].details["typosquat_of"].as_str(), Some("lodash"));
     }
 
     /// Single-maintainer-only is emitted at Info severity. It's noisy
@@ -996,15 +1178,7 @@ mod tests {
     #[test]
     fn single_maintainer_with_companion_reason_still_fires() {
         let yesterday = rfc3339_days_ago(1);
-        let snap = make_snapshot(
-            1,
-            50,
-            Some(yesterday.clone()),
-            None,
-            None,
-            None,
-            true,
-        );
+        let snap = make_snapshot(1, 50, Some(yesterday.clone()), None, None, None, true);
         let pkg = npm("solo", "1.0.0");
         let policy = Policy::default();
         let f = score_package(&pkg, &snap, &policy, Some(yesterday))

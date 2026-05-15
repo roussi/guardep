@@ -55,18 +55,12 @@ impl EvaluatorRegistry {
 
         // Stable order: by package name, then version, then kind, then id.
         all.sort_by(|a, b| {
-            (
-                &a.package.name,
-                &a.package.version,
-                a.kind.as_str(),
-                &a.id,
-            )
-                .cmp(&(
-                    &b.package.name,
-                    &b.package.version,
-                    b.kind.as_str(),
-                    &b.id,
-                ))
+            (&a.package.name, &a.package.version, a.kind.as_str(), &a.id).cmp(&(
+                &b.package.name,
+                &b.package.version,
+                b.kind.as_str(),
+                &b.id,
+            ))
         });
         Ok(all)
     }
@@ -124,7 +118,9 @@ mod tests {
         let policy = Policy::default();
         let findings = reg.run(&pkgs, &policy).await.unwrap();
         assert_eq!(findings.len(), 2);
-        assert!(findings.iter().any(|f| f.kind == FindingKind::Vulnerability));
+        assert!(findings
+            .iter()
+            .any(|f| f.kind == FindingKind::Vulnerability));
         assert!(findings.iter().any(|f| f.kind == FindingKind::RiskScore));
     }
 }

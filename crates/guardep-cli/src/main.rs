@@ -83,7 +83,11 @@ impl From<SeverityArg> for guardep_core::FindingSeverity {
 }
 
 #[derive(Parser)]
-#[command(name = "guardep", version, about = "Block compromised dependencies before they install")]
+#[command(
+    name = "guardep",
+    version,
+    about = "Block compromised dependencies before they install"
+)]
 struct Cli {
     /// Verbose logging (HTTP calls, evaluator timings, cache hits).
     /// Affects diagnostics only — does NOT change which findings are
@@ -190,8 +194,7 @@ fn init_tracing(verbose: bool) {
     let default = if verbose { "debug" } else { "warn" };
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_env("GUARDEP_LOG")
-                .unwrap_or_else(|_| EnvFilter::new(default)),
+            EnvFilter::try_from_env("GUARDEP_LOG").unwrap_or_else(|_| EnvFilter::new(default)),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -232,7 +235,14 @@ async fn main() -> Result<()> {
     init_tracing(cli.verbose);
 
     match cli.command {
-        Cmd::Audit { path, format, collapse, severity, fail_on, lockfile } => {
+        Cmd::Audit {
+            path,
+            format,
+            collapse,
+            severity,
+            fail_on,
+            lockfile,
+        } => {
             commands::audit::run(
                 &path,
                 format.into(),
@@ -243,12 +253,17 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Cmd::Fix { path, target, apply, yes } => {
-            commands::fix::run(&path, target.into(), apply, yes).await
-        }
-        Cmd::InstallShims { force, no_wire_path, yes } => {
-            commands::install_shims::run(force, !no_wire_path, yes)
-        }
+        Cmd::Fix {
+            path,
+            target,
+            apply,
+            yes,
+        } => commands::fix::run(&path, target.into(), apply, yes).await,
+        Cmd::InstallShims {
+            force,
+            no_wire_path,
+            yes,
+        } => commands::install_shims::run(force, !no_wire_path, yes),
         Cmd::UninstallShims { force } => commands::install_shims::uninstall(force),
         Cmd::Shim { tool, args } => shim::run(&tool, &args).await,
         Cmd::Info => commands::info::run(),

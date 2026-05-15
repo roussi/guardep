@@ -210,17 +210,23 @@ impl Policy {
                 FindingSeverity::Critical => self.critical_cve,
                 FindingSeverity::High => self.high_cve,
                 FindingSeverity::Medium => self.medium_cve,
-                FindingSeverity::Low | FindingSeverity::Unknown | FindingSeverity::Info => self.low_cve,
+                FindingSeverity::Low | FindingSeverity::Unknown | FindingSeverity::Info => {
+                    self.low_cve
+                }
             },
             FindingKind::PostinstallScript => match severity {
                 FindingSeverity::Critical => self.postinstall_critical,
                 FindingSeverity::High | FindingSeverity::Medium => self.postinstall_suspicious,
-                FindingSeverity::Low | FindingSeverity::Unknown | FindingSeverity::Info => self.postinstall_default,
+                FindingSeverity::Low | FindingSeverity::Unknown | FindingSeverity::Info => {
+                    self.postinstall_default
+                }
             },
             FindingKind::RiskScore => match severity {
                 FindingSeverity::Critical | FindingSeverity::High => Action::Block,
                 FindingSeverity::Medium => Action::Warn,
-                FindingSeverity::Low | FindingSeverity::Unknown | FindingSeverity::Info => Action::Allow,
+                FindingSeverity::Low | FindingSeverity::Unknown | FindingSeverity::Info => {
+                    Action::Allow
+                }
             },
             FindingKind::MissingProvenance => self.missing_provenance,
             FindingKind::ProvenanceMismatch => self.provenance_mismatch,
@@ -308,8 +314,10 @@ mod tests {
     #[test]
     fn finding_allowlist_per_id() {
         let mut p = Policy::default();
-        p.finding_allowlist
-            .insert("axios@1.13.2".into(), HashSet::from(["GHSA-43fc-jf86-j433".into()]));
+        p.finding_allowlist.insert(
+            "axios@1.13.2".into(),
+            HashSet::from(["GHSA-43fc-jf86-j433".into()]),
+        );
         assert!(p.is_finding_allowlisted("axios@1.13.2", "GHSA-43fc-jf86-j433"));
         assert!(!p.is_finding_allowlisted("axios@1.13.2", "OTHER"));
         assert!(!p.is_finding_allowlisted("other@1.0.0", "GHSA-43fc-jf86-j433"));

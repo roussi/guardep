@@ -13,7 +13,10 @@ const INTERCEPTED: &[&str] = &["install", "i", "add", "ci", "update", "upgrade"]
 const NEEDS_DRY_RUN: &[&str] = &["install", "i", "add", "update", "upgrade"];
 
 pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
-    let subcommand = args.iter().find(|a| !a.starts_with('-')).map(|s| s.as_str());
+    let subcommand = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .map(|s| s.as_str());
 
     let should_intercept = subcommand
         .map(|s| INTERCEPTED.contains(&s))
@@ -70,7 +73,9 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
         None
     };
 
-    if resolved.is_none() && !lock_path.exists() && !project_root.join("pnpm-lock.yaml").exists()
+    if resolved.is_none()
+        && !lock_path.exists()
+        && !project_root.join("pnpm-lock.yaml").exists()
         && !project_root.join("yarn.lock").exists()
     {
         eprintln!(
@@ -88,20 +93,11 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
 
     let verdict_result = match resolved {
         Some(packages) => {
-            audit::evaluate_packages(
-                &project_root,
-                packages,
-                guardep_core::FindingSeverity::Low,
-            )
-            .await
+            audit::evaluate_packages(&project_root, packages, guardep_core::FindingSeverity::Low)
+                .await
         }
         None => {
-            audit::evaluate_project(
-                &project_root,
-                guardep_core::FindingSeverity::Low,
-                None,
-            )
-            .await
+            audit::evaluate_project(&project_root, guardep_core::FindingSeverity::Low, None).await
         }
     };
 

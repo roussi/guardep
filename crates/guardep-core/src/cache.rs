@@ -98,8 +98,7 @@ impl KvCache {
     /// to surface cache health.
     pub fn stats(&self) -> Result<CacheStats> {
         let conn = self.conn.lock().expect("kv cache mutex poisoned");
-        let rows: i64 =
-            conn.query_row("SELECT COUNT(*) FROM kv_cache", [], |r| r.get(0))?;
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM kv_cache", [], |r| r.get(0))?;
         Ok(CacheStats {
             row_count: rows as usize,
         })

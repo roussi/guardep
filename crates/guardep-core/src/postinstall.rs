@@ -245,7 +245,10 @@ fn score_ast(findings: &[postinstall_ast::AstFinding]) -> (i32, Vec<&'static str
 /// Promote the regex severity if AST findings warrant it. AST can only
 /// raise severity, never lower it: a clean AST doesn't excuse a script
 /// the regex flagged as Critical.
-fn merge_severity(regex_sev: FindingSeverity, ast_findings: &[postinstall_ast::AstFinding]) -> FindingSeverity {
+fn merge_severity(
+    regex_sev: FindingSeverity,
+    ast_findings: &[postinstall_ast::AstFinding],
+) -> FindingSeverity {
     let ast_sev = ast_findings
         .iter()
         .map(|f| f.severity)
@@ -355,7 +358,8 @@ fn score_script(script: &str) -> (i32, Vec<&'static str>) {
         score += 15;
         rules.push("dangerous-require");
     }
-    let escape_count = p.hex_escape.find_iter(script).count() + p.unicode_escape.find_iter(script).count();
+    let escape_count =
+        p.hex_escape.find_iter(script).count() + p.unicode_escape.find_iter(script).count();
     if escape_count > 5 {
         score += 15;
         rules.push("obfuscation");
@@ -368,8 +372,7 @@ fn score_script(script: &str) -> (i32, Vec<&'static str>) {
         score += 10;
         rules.push("deferred-exec");
     }
-    if script.len() < 20
-        && (script.contains("&&") || script.contains(';') || script.contains('|'))
+    if script.len() < 20 && (script.contains("&&") || script.contains(';') || script.contains('|'))
     {
         score += 5;
         rules.push("short-chain");

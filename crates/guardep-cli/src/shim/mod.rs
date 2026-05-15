@@ -45,7 +45,7 @@ pub fn passthrough(tool: &str, args: &[String]) -> Result<()> {
 
 pub fn locate_real_binary(tool: &str) -> Result<std::path::PathBuf> {
     // Skip our own shim dir to avoid infinite recursion.
-    let shim_dir = crate::commands::install_shims::shim_dir().ok().map(|p| p);
+    let shim_dir = crate::commands::install_shims::shim_dir().ok();
     let path = std::env::var_os("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path) {
         if shim_dir.as_deref() == Some(dir.as_path()) {

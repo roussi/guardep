@@ -40,12 +40,9 @@
 //!   leaving the regex detector to do its thing.
 
 use std::path::Path;
-use swc_common::{
-    BytePos, FileName, SourceMap,
-    sync::Lrc,
-};
+use swc_common::{sync::Lrc, BytePos, FileName, SourceMap};
 use swc_ecma_ast::*;
-use swc_ecma_parser::{Parser, StringInput, Syntax, lexer::Lexer};
+use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax};
 use swc_ecma_visit::{Visit, VisitWith};
 
 // Sensitive identifier names assembled from fragments to avoid
@@ -130,10 +127,7 @@ impl AstRule {
 /// parsing fails; the caller can fall back to regex-based scoring.
 pub fn analyze_source(script: &str) -> Vec<AstFinding> {
     let cm: Lrc<SourceMap> = Default::default();
-    let fm = cm.new_source_file(
-        Lrc::new(FileName::Anon),
-        script.to_string(),
-    );
+    let fm = cm.new_source_file(Lrc::new(FileName::Anon), script.to_string());
 
     let lexer = Lexer::new(
         Syntax::Es(Default::default()),
@@ -175,7 +169,10 @@ struct RiskVisitor {
 
 impl RiskVisitor {
     fn line_of(&self, pos: BytePos) -> u32 {
-        self.source_map.lookup_line(pos).map(|l| l.line as u32 + 1).unwrap_or(0)
+        self.source_map
+            .lookup_line(pos)
+            .map(|l| l.line as u32 + 1)
+            .unwrap_or(0)
     }
 
     fn push(&mut self, rule: AstRule, line: u32, detail: impl Into<String>) {
@@ -196,12 +193,16 @@ impl RiskVisitor {
 
         let is_process = name.starts_with(&cp_prefix_a)
             || name.starts_with(cp_prefix_b)
-            || process_methods.iter().any(|m| name == *m);
+            || process_methods.contains(&name);
         if !is_process {
             return;
         }
         if args_dynamic {
-            self.push(AstRule::ProcessExecDynamic, line, format!("{name}(<dynamic>)"));
+            self.push(
+                AstRule::ProcessExecDynamic,
+                line,
+                format!("{name}(<dynamic>)"),
+            );
         } else {
             self.push(AstRule::ProcessExec, line, format!("{name}(...)"));
         }
@@ -398,7 +399,7 @@ mod tests {
         // The regex detector would flag every cp-module mention; the
         // AST visitor sees only real CallExpressions, so neither the
         // comment nor the string literal triggers a finding.
-        let mention = format!("{}", cp_module());
+        let mention = cp_module().to_string();
         let src = format!(
             "// mentions {mention} in a comment\n\
              const note = \"calling {mention} for fun\";\n\

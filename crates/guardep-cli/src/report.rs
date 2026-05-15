@@ -1,10 +1,8 @@
 use anyhow::Result;
 use comfy_table::{presets::UTF8_FULL, Cell, Color, Table};
-use guardep_core::{
-    Action, DisplayClass, FindingSeverity, FindingsReport, ScoredFinding,
-};
 #[cfg(test)]
 use guardep_core::FindingKind;
+use guardep_core::{Action, DisplayClass, FindingSeverity, FindingsReport, ScoredFinding};
 use owo_colors::OwoColorize;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -27,7 +25,9 @@ pub fn print_verdict(report: &FindingsReport, collapse: bool) {
 fn print_expanded(deduped: &[&ScoredFinding]) {
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
-    table.set_header(vec!["", "Package", "Finding", "Class", "Severity", "Fix", "Action"]);
+    table.set_header(vec![
+        "", "Package", "Finding", "Class", "Severity", "Fix", "Action",
+    ]);
 
     for s in deduped {
         let icon = row_icon(s.action, s.finding.severity);
@@ -112,9 +112,7 @@ fn print_collapsed(deduped: &[&ScoredFinding]) {
     println!("{table}");
 }
 
-fn group_by_package<'a>(
-    deduped: &[&'a ScoredFinding],
-) -> BTreeMap<String, Vec<&'a ScoredFinding>> {
+fn group_by_package<'a>(deduped: &[&'a ScoredFinding]) -> BTreeMap<String, Vec<&'a ScoredFinding>> {
     let mut groups: BTreeMap<String, Vec<&'a ScoredFinding>> = BTreeMap::new();
     for s in deduped {
         let key = format!("{}@{}", s.finding.package.name, s.finding.package.version);
@@ -321,7 +319,11 @@ fn print_summary(report: &FindingsReport, deduped_total: usize, collapsed: bool)
     let groups_part = group_count
         .map(|g| format!(", {} affected package{}", g, if g == 1 { "" } else { "s" }))
         .unwrap_or_default();
-    let info_part = if info > 0 { format!(", {info} info") } else { String::new() };
+    let info_part = if info > 0 {
+        format!(", {info} info")
+    } else {
+        String::new()
+    };
 
     if blocks > 0 {
         println!(
@@ -569,9 +571,15 @@ mod tests {
 
     #[test]
     fn split_scoped() {
-        assert_eq!(split_key("@xmldom/xmldom@0.8.11"), ("@xmldom/xmldom", "0.8.11"));
+        assert_eq!(
+            split_key("@xmldom/xmldom@0.8.11"),
+            ("@xmldom/xmldom", "0.8.11")
+        );
         assert_eq!(split_key("axios@1.13.2"), ("axios", "1.13.2"));
-        assert_eq!(split_key("@scope/pkg@1.0.0-beta.1"), ("@scope/pkg", "1.0.0-beta.1"));
+        assert_eq!(
+            split_key("@scope/pkg@1.0.0-beta.1"),
+            ("@scope/pkg", "1.0.0-beta.1")
+        );
     }
 
     fn mk(installed: &str, fixes: &[&str]) -> ScoredFinding {

@@ -76,8 +76,7 @@ pub async fn run(path: &Path, target: FixTarget, apply: bool, yes: bool) -> Resu
     // display preference, so override threshold to Low (default minus
     // Info-only signals like single-maintainer-alone, which carry no
     // version-bump remedy anyway).
-    let report =
-        audit::evaluate_project(path, guardep_core::FindingSeverity::Low, None).await?;
+    let report = audit::evaluate_project(path, guardep_core::FindingSeverity::Low, None).await?;
     let plan = build_plan(&report, target);
     print_plan(&plan, target);
 
@@ -233,7 +232,10 @@ fn build_plan(report: &FindingsReport, target: FixTarget) -> Plan {
         match s.finding.kind {
             FindingKind::Vulnerability | FindingKind::Malware => {
                 by_package
-                    .entry((s.finding.package.name.clone(), s.finding.package.version.clone()))
+                    .entry((
+                        s.finding.package.name.clone(),
+                        s.finding.package.version.clone(),
+                    ))
                     .or_default()
                     .push(s);
             }
@@ -467,18 +469,11 @@ mod tests {
 
     #[test]
     fn npm_install_all_is_atomic_single_invocation() {
-        let cmd = PackageManager::Npm.install_all_cmd(&[
-            upg("axios", "1.15.2"),
-            upg("lodash", "4.18.0"),
-        ]);
+        let cmd =
+            PackageManager::Npm.install_all_cmd(&[upg("axios", "1.15.2"), upg("lodash", "4.18.0")]);
         assert_eq!(
             cmd,
-            vec![
-                "npm",
-                "install",
-                "axios@^1.15.2",
-                "lodash@^4.18.0",
-            ]
+            vec!["npm", "install", "axios@^1.15.2", "lodash@^4.18.0",]
         );
     }
 

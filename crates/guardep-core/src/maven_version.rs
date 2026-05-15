@@ -53,7 +53,7 @@ fn parse(s: &str) -> Vec<Component> {
     let mut out: Vec<Component> = Vec::new();
 
     // Split on '.' and '-' first.
-    for raw in lower.split(|c: char| c == '.' || c == '-') {
+    for raw in lower.split(['.', '-']) {
         if raw.is_empty() {
             continue;
         }

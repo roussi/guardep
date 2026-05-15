@@ -236,10 +236,7 @@ fn convert(v: OsvVuln, ecosystem: Ecosystem, package: &str) -> Advisory {
         })
         .collect();
 
-    let fixed_versions: Vec<String> = ranges
-        .iter()
-        .filter_map(|r| r.fixed.clone())
-        .collect();
+    let fixed_versions: Vec<String> = ranges.iter().filter_map(|r| r.fixed.clone()).collect();
 
     let severity = parse_severity(&v.severity, &v.database_specific, &v.affected);
     let class = classify(&v.id, &v.summary, &v.database_specific);

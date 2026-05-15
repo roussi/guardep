@@ -28,7 +28,10 @@ pub fn run() -> Result<()> {
             })
             .unwrap_or_default();
         if installed.is_empty() {
-            println!("  shims:          {} (no symlinks)", "not installed".yellow());
+            println!(
+                "  shims:          {} (no symlinks)",
+                "not installed".yellow()
+            );
         } else {
             println!("  shims installed: {}", installed.join(", "));
         }
@@ -51,10 +54,7 @@ pub fn run() -> Result<()> {
     let cache_db = dirs.cache_dir().join("cache.db");
     if cache_db.exists() {
         let size = std::fs::metadata(&cache_db).map(|m| m.len()).unwrap_or(0);
-        println!(
-            "  cache.db:       exists ({:.1} KB)",
-            size as f64 / 1024.0
-        );
+        println!("  cache.db:       exists ({:.1} KB)", size as f64 / 1024.0);
     } else {
         println!("  cache.db:       not yet created (will populate on first audit)");
     }
@@ -64,7 +64,10 @@ pub fn run() -> Result<()> {
     // version where it would be expected to.
     println!();
     println!("{}", "linked dependencies".bold());
-    println!("  sigstore:       {}", "0.13.x (Rekor inclusion proof not yet implemented)".dimmed());
+    println!(
+        "  sigstore:       {}",
+        "0.13.x (Rekor inclusion proof not yet implemented)".dimmed()
+    );
     println!("  swc_ecma_parser: {}", "39.x".dimmed());
     println!("  rusqlite:       {}", "bundled".dimmed());
 
