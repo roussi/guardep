@@ -45,16 +45,21 @@ pub struct Policy {
     #[serde(default = "default_allow")]
     pub postinstall_default: Action,
     /// Action when heuristic detector flags a script as suspicious
-    /// (network calls + cred fs reads, base64+eval, etc.)
-    #[serde(default = "default_block")]
+    /// Action when the heuristic flags a script as suspicious
+    /// (Medium/High by combined regex+AST score, but with no
+    /// unambiguously-malicious pattern). Default `warn` because
+    /// without dataflow analysis we can't reliably distinguish
+    /// suspicious-looking-but-benign install scripts (esbuild,
+    /// electron, native bindings) from real attacks.
+    #[serde(default = "default_warn")]
     pub postinstall_suspicious: Action,
-    /// Action when heuristic flags a script as critical (clear malware
-    /// pattern). Always block by default.
+    /// Action when the heuristic flags a script as critical (an
+    /// unambiguously-malicious pattern fired: credential file read,
+    /// base64-decode chained with dynamic code execution, etc).
+    /// Always blocks by default — these patterns have no innocent
+    /// explanation.
     #[serde(default = "default_block")]
     pub postinstall_critical: Action,
-    /// Pre-approved script SHA-256 hashes (skip review).
-    #[serde(default)]
-    pub allowed_script_hashes: HashSet<String>,
 
     // ── Risk score policy (Phase 1C) ─────────────────────────────────────
     /// Block any package whose computed risk score exceeds this (0-100).
@@ -133,38 +138,6 @@ fn default_true() -> bool {
     true
 }
 
-/// Pre-approved SHA-256 hashes of common, well-known benign install
-/// scripts. Suppresses noise from packages that legitimately ship
-/// `node install.js`, `node-gyp rebuild`, etc. Users can extend this
-/// list via `policy.allowed_script_hashes` in `guardep.toml`.
-fn default_allowed_script_hashes() -> HashSet<String> {
-    [
-        // "node install.js" — electron, esbuild, many native bindings
-        "912d4d8f507b7b392ae422a459f98da94669a742e4cc43cfe061e630ee2846fe",
-        // "node ./install.js"
-        "ffcd30ee02ebe94ed91aaad2947b2a122838d0715e725833711b409c70c79605",
-        // "node ./scripts/install.js"
-        "e8d389f3116b70488031adf8aba2d570bfcad5ae8e67d8ccc74199f0b4cb6733",
-        // "node-gyp rebuild" — universal native module build
-        "55941a60816361a50d221482fed3b3842464f10af4371a667af4268d13b953a2",
-        // "prebuild-install || node-gyp rebuild"
-        "582bbd5982901bafc7a72276d195e371d76dc1d1dd5d3e425682444c4feaa8aa",
-        // "prebuild-install"
-        "1b461934a7812831db18e5b164fc30d04975b4f5cc06b28329048364ed56b4d1",
-        // "node-gyp configure && node-gyp build"
-        "7bb94ff9a61d8ca73928728f2386f0f418841064b87b07e7fef5585482d30fab",
-        // "npm run build"
-        "16c0e4305ac213dff39fc82b69b6e08aeeb8758e33cd72d7c409752a70e9f054",
-        // "node dist/index.js --exec install" — cypress
-        "d4951105d74d2e8a684c155c9ef75e2916c3a6ee3ce58f8d11db131011f882c4",
-        // "node ./script/select-7z-arch.js" — electron-winstaller
-        "06ad330351c94e886bde150af9e3b834cc509db3be24a650749871087f2d7518",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
-}
-
 impl Default for Policy {
     fn default() -> Self {
         Self {
@@ -174,9 +147,8 @@ impl Default for Policy {
             medium_cve: Action::Allow,
             low_cve: Action::Allow,
             postinstall_default: Action::Allow,
-            postinstall_suspicious: Action::Block,
+            postinstall_suspicious: Action::Warn,
             postinstall_critical: Action::Block,
-            allowed_script_hashes: default_allowed_script_hashes(),
             block_if_risk_score_above: 85,
             warn_if_risk_score_above: 60,
             warn_if_unmaintained_days: 730,
@@ -257,10 +229,6 @@ impl Policy {
             .get(pkg_key)
             .map(|set| set.contains(finding_id))
             .unwrap_or(false)
-    }
-
-    pub fn is_script_hash_allowed(&self, sha256: &str) -> bool {
-        self.allowed_script_hashes.contains(sha256)
     }
 
     /// True when the package matches any glob in `require_provenance`.
@@ -360,9 +328,14 @@ mod tests {
             p.decide_finding(FindingKind::PostinstallScript, FindingSeverity::Critical),
             Action::Block
         );
+        // Medium-severity postinstall maps to the "suspicious" tier,
+        // which now defaults to Warn (not Block) because without
+        // dataflow analysis the heuristic produces too many false
+        // positives at the Medium level (e.g. esbuild's install.js
+        // legitimately spawns child processes with computed paths).
         assert_eq!(
             p.decide_finding(FindingKind::PostinstallScript, FindingSeverity::Medium),
-            Action::Block // mapped to "suspicious" tier
+            Action::Warn
         );
         // Score-0 / Low postinstall now defaults to Allow — most npm
         // install scripts are benign (`node install.js`, `node-gyp

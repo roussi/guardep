@@ -95,9 +95,8 @@ low_cve       = "allow"
 
 # Postinstall script policy
 postinstall_default    = "allow"   # score-0 scripts (most installs)
-postinstall_suspicious = "block"
-postinstall_critical   = "block"
-allowed_script_hashes  = []        # SHA-256 of pre-approved scripts
+postinstall_suspicious = "warn"    # mid-tier (suspicious-looking but ambiguous)
+postinstall_critical   = "block"   # unambiguous patterns (cred read, base64+eval)
 
 # Risk scoring policy
 block_if_risk_score_above  = 85
@@ -105,9 +104,9 @@ warn_if_risk_score_above   = 60
 warn_if_unmaintained_days  = 730
 warn_if_fresh_publish_days = 7
 block_typosquats           = true
-report_single_maintainer   = false   # surface as Info when true
+show_info                  = false   # surface Info-tier findings
 
-# Provenance policy (presence + identity check only)
+# Provenance policy
 require_provenance   = []           # globs: ["@*/*", "chalk", "react"]
 missing_provenance   = "block"
 provenance_mismatch  = "block"
@@ -117,9 +116,18 @@ cache_refresh_hours = 6
 
 # Allowlists
 allowlist = []                                # blanket: "axios@1.13.2"
-[policy.finding_allowlist]                    # surgical
+[policy.finding_allowlist]                    # surgical, by finding ID
 # "axios@1.13.2" = ["GHSA-43fc-jf86-j433"]
+# "esbuild@0.25.12" = ["script:postinstall:912d4d8f..."]
 ```
+
+> Postinstall findings are suppressed via `finding_allowlist` (the
+> same machinery as OSV findings), keyed by `pkg@version` and the
+> stable finding ID (e.g. `script:postinstall:<sha>`). There's no
+> separate "trust this script hash" knob — finding IDs already
+> include the script hash and are scoped to a specific package, so
+> a malicious version of the same package wouldn't match the same
+> ID.
 
 ## Architecture
 

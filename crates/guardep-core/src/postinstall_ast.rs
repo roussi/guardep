@@ -94,13 +94,32 @@ pub enum AstSeverity {
 }
 
 impl AstRule {
+    /// Default severity per rule.
+    ///
+    /// Without dataflow analysis we can't tell `exec(payload)` (where
+    /// payload came from the network) from `exec(platformBinary)`
+    /// (where it came from a hardcoded map). Real-world legitimate
+    /// install scripts (esbuild, electron, native bindings) routinely
+    /// hit ProcessExecDynamic and DynamicRequire because they pick
+    /// platform-specific binaries at runtime.
+    ///
+    /// We therefore reserve Critical/High *only* for patterns that
+    /// have no innocent explanation (eval-of-base64-decode, reads of
+    /// known credential files). Everything else is Medium or below —
+    /// surfaces in the report, doesn't block by default. Operators who
+    /// want stricter behavior raise the policy thresholds.
     pub fn default_severity(self) -> AstSeverity {
         match self {
+            // Unambiguously bad patterns — block by default.
             AstRule::Base64EvalChain => AstSeverity::Critical,
             AstRule::CredentialFileRead => AstSeverity::Critical,
-            AstRule::ProcessExecDynamic => AstSeverity::High,
             AstRule::DynamicCodeExec => AstSeverity::High,
-            AstRule::DynamicRequire => AstSeverity::Medium,
+            // Ambiguous without dataflow — surface as Medium so they
+            // appear in the report but don't trigger blocks on legit
+            // platform-binary install scripts.
+            AstRule::ProcessExecDynamic => AstSeverity::Medium,
+            AstRule::DynamicRequire => AstSeverity::Low,
+            // Background noise of legit install scripts.
             AstRule::ProcessExec => AstSeverity::Low,
             AstRule::NetworkCall => AstSeverity::Low,
         }

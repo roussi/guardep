@@ -121,13 +121,14 @@ async fn ast_clean_for_legit_install_script() {
     let policy = Policy::default();
 
     let findings = evaluator.evaluate(&[pkg], &policy).await.unwrap();
-    // The script "node install.js" is in the default
-    // allowed_script_hashes, so the regex score is zeroed. AST still
-    // runs and notices the literal-arg execSync — that's a Low
-    // ProcessExec, which the FindingsReport pipeline filters as
-    // Action::Allow under the default policy. The evaluator itself
-    // returns it, though, so we assert severity stays at most Low
-    // (i.e. AST did NOT promote to Critical/High/Medium).
+    // The shell command `node install.js` scores 0 under the regex
+    // detector (no shell-side red flags). AST runs on install.js and
+    // notices the literal-arg execSync — Low ProcessExec. The
+    // FindingsReport pipeline then filters Low postinstall findings
+    // as Action::Allow under the default policy. The evaluator itself
+    // returns the Low finding; we assert severity didn't promote
+    // higher (no Critical/High/Medium false positive on a clean
+    // native-binary install script).
     for f in &findings {
         assert!(
             f.severity == FindingSeverity::Low,
