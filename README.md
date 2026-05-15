@@ -19,7 +19,8 @@
 | Sigstore provenance                   | Presence + identity + **full crypto verification** (Fulcio cert chain, DSSE signature, SCT). Falls back to presence + identity when the trust root cannot be initialised (offline). Rekor inclusion proof check is not yet implemented (TODO upstream in `sigstore-rs`). |
 | Pre-install gate (`npm ci`)           | Works when invoked through the shim AND lockfile is up-to-date.                            |
 | Pre-install gate (`npm install foo`)  | **Limited.** Currently reads existing lockfile, so brand-new packages bypass until lockfile updates. See "Threat model" below. |
-| Maven / Gradle                        | Not implemented. Shim passes through.                                                      |
+| Maven                                 | Resolves transitive graph via `mvn dependency:tree -DoutputType=tgf`. OSV ranges use a Maven-correct version comparator (qualifier ordering, snapshot/sp semantics). No shim yet. |
+| Gradle                                | Not implemented. Shim passes through.                                                      |
 | Bypass via `/usr/local/bin/npm`       | **Possible.** PATH-based shim is not airtight.                                             |
 
 ## Why this exists
@@ -172,7 +173,8 @@ guardep does **not** currently defend against:
 - [ ] **AST-based postinstall analysis.** Replace regex heuristic with `swc_ecma_parser`. Real comment / string-literal awareness.
 - [x] **Sigstore crypto verification.** Fulcio cert chain, DSSE signature, SCT, Identity policy bound to GitHub Actions OIDC issuer.
 - [ ] **Rekor inclusion proof.** Implementation merged upstream in [sigstore-rs#543](https://github.com/sigstore/sigstore-rs/pull/543) (Jan 2026) but not yet released to crates.io. We're pinned to `sigstore = "0.13"` (the latest release) which still skips the proof. Will bump to 0.14 (or whatever ships the merge) and flip `offline=false` once it's published.
-- [ ] **Maven resolver.**
+- [x] **Maven resolver** (`mvn dependency:tree -DoutputType=tgf`) with Apache version-order comparator
+- [ ] **Maven shim** (intercept install-equivalent invocations)
 - [ ] **Gradle resolver.**
 - [ ] **GitHub Action wrapper.**
 - [ ] **SARIF output.**

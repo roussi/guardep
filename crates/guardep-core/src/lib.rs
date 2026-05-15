@@ -4,6 +4,7 @@ pub mod ecosystem;
 pub mod evaluator;
 pub mod finding;
 pub mod intel;
+pub mod maven_version;
 pub mod osv;
 pub mod osv_evaluator;
 pub mod policy;

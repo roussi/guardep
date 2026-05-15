@@ -3,6 +3,7 @@
 
 use crate::advisory::AffectedRange;
 use crate::ecosystem::Ecosystem;
+use crate::maven_version;
 use semver::Version;
 
 /// True when `version` falls inside any of `ranges` for the given
@@ -33,8 +34,22 @@ pub fn version_in_ranges(version: &str, eco: Ecosystem, ranges: &[AffectedRange]
                     return true;
                 }
             }
+        } else if eco == Ecosystem::Maven {
+            // Maven: faithful Apache version-order comparator.
+            let above = match &r.introduced {
+                None => true,
+                Some(i) => maven_version::ge(version, i),
+            };
+            let below = match &r.fixed {
+                None => true,
+                Some(f) => maven_version::lt(version, f),
+            };
+            if above && below {
+                return true;
+            }
         } else {
-            // Maven/PyPI: lexicographic fallback. TODO: real version comparators.
+            // PyPI: lexicographic fallback for now (PEP 440 is a
+            // separate beast; rare in our pipelines).
             let above = match &r.introduced {
                 None => true,
                 Some(i) => version >= i.as_str(),
@@ -76,6 +91,25 @@ mod tests {
     fn npm_range_open_ended_fix_means_no_fix_yet() {
         let ranges = vec![r(Some("1.0.0"), None)];
         assert!(version_in_ranges("999.0.0", Ecosystem::Npm, &ranges));
+    }
+
+    #[test]
+    fn maven_range_uses_qualifier_aware_compare() {
+        let ranges = vec![r(Some("1.0.0-alpha"), Some("1.0.0"))];
+        // alpha is before release, so 1.0.0-alpha matches, 1.0.0 does not.
+        assert!(version_in_ranges("1.0.0-alpha", Ecosystem::Maven, &ranges));
+        assert!(version_in_ranges("1.0.0-rc1", Ecosystem::Maven, &ranges));
+        assert!(!version_in_ranges("1.0.0", Ecosystem::Maven, &ranges));
+        assert!(!version_in_ranges("1.0.0-sp1", Ecosystem::Maven, &ranges));
+    }
+
+    #[test]
+    fn maven_numeric_minor_not_lexicographic() {
+        let ranges = vec![r(Some("1.0.0"), Some("1.10.0"))];
+        // 1.9.0 < 1.10.0 numerically; lex comparison would say 1.9 > 1.10.
+        assert!(version_in_ranges("1.9.0", Ecosystem::Maven, &ranges));
+        assert!(!version_in_ranges("1.10.0", Ecosystem::Maven, &ranges));
+        assert!(!version_in_ranges("1.11.0", Ecosystem::Maven, &ranges));
     }
 
     #[test]

@@ -229,13 +229,16 @@ fn flush_yarn_stanza(
 
 // ── Auto-detect ──────────────────────────────────────────────────────────
 
-/// Pick the right resolver based on which lockfile is present. Returns
-/// the lockfile filename used so callers can report it.
+/// Pick the right resolver based on which lockfile/manifest is present.
+/// Returns the file used so callers can report it.
 pub fn auto_resolve(project_root: &Path) -> Result<(Vec<PackageRef>, &'static str)> {
+    // Probed in order; first match wins. npm-family lockfiles are
+    // probed first because they're cheap and the most common case.
     let candidates: &[(&str, &dyn Fn() -> Box<dyn Resolver>)] = &[
         ("package-lock.json", &|| Box::new(NpmLockResolver)),
         ("pnpm-lock.yaml", &|| Box::new(PnpmLockResolver)),
         ("yarn.lock", &|| Box::new(YarnLockResolver)),
+        ("pom.xml", &|| Box::new(MavenTreeResolver)),
     ];
     for (name, ctor) in candidates {
         let path: PathBuf = project_root.join(name);
@@ -246,7 +249,8 @@ pub fn auto_resolve(project_root: &Path) -> Result<(Vec<PackageRef>, &'static st
         }
     }
     anyhow::bail!(
-        "no supported lockfile in {} (looked for package-lock.json, pnpm-lock.yaml, yarn.lock)",
+        "no supported manifest in {} (looked for package-lock.json, \
+         pnpm-lock.yaml, yarn.lock, pom.xml)",
         project_root.display()
     )
 }
@@ -366,6 +370,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_maven_tgf_skipping_root_and_edges() {
+        let raw = "1 com.example:my-app:jar:1.0.0\n\
+                   2 org.apache.commons:commons-lang3:jar:3.12.0:compile\n\
+                   3 com.fasterxml.jackson.core:jackson-core:jar:2.15.0:compile\n\
+                   4 com.fasterxml.jackson.core:jackson-databind:jar:2.15.0-snapshot:compile\n\
+                   #\n\
+                   1 2 compile\n\
+                   1 3 compile\n";
+        let pkgs = parse_tgf(raw);
+        // root project (1) is skipped; we get 3 deps.
+        assert_eq!(pkgs.len(), 3);
+        assert!(pkgs
+            .iter()
+            .any(|p| p.name == "org.apache.commons:commons-lang3" && p.version == "3.12.0"));
+        assert!(pkgs
+            .iter()
+            .any(|p| p.name == "com.fasterxml.jackson.core:jackson-databind"
+                && p.version == "2.15.0-snapshot"));
+        // ecosystem is Maven, not Npm
+        for p in &pkgs {
+            assert_eq!(p.ecosystem, Ecosystem::Maven);
+        }
+    }
+
+    #[test]
+    fn parses_maven_tgf_handles_blank_lines_and_no_edges() {
+        let raw = "\n\
+                   1 com.example:my-app:jar:1.0.0\n\
+                   \n\
+                   2 com.x:y:jar:0.1.0\n";
+        let pkgs = parse_tgf(raw);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "com.x:y");
+    }
+
+    #[test]
     fn auto_resolve_picks_npm_lock_when_present() {
         let dir = TempDir::new().unwrap();
         write(
@@ -398,8 +438,105 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let err = auto_resolve(dir.path()).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("no supported lockfile"));
+        assert!(msg.contains("no supported manifest"));
     }
+}
+
+// ── Maven dependency-tree resolver ──────────────────────────────────────
+//
+// Maven projects must be resolved through `mvn` itself: there's no
+// static lockfile and the transitive graph depends on the local Maven
+// settings (mirrors, profiles, parent POM resolution). We shell out to
+// `mvn dependency:tree -DoutputType=tgf` and parse the TGF output.
+//
+// TGF (Trivial Graph Format) emitted by maven-dependency-plugin looks
+// like:
+//
+//   1 com.example:my-app:jar:1.0.0
+//   2 org.apache.commons:commons-lang3:jar:3.12.0:compile
+//   ...
+//   #
+//   1 2 compile
+//   ...
+//
+// We need only the node lines (before `#`); each is `<id> <gav>` where
+// `gav` is `group:artifact:packaging:version[:scope]`. We emit one
+// `PackageRef` per artifact, ecosystem `Maven`, name = `group:artifact`,
+// version = `version`. The root project (id 1) is skipped.
+
+pub struct MavenTreeResolver;
+
+impl Resolver for MavenTreeResolver {
+    fn resolve(&self, project_root: &Path) -> Result<Vec<PackageRef>> {
+        let pom = project_root.join("pom.xml");
+        if !pom.exists() {
+            anyhow::bail!("pom.xml not found in {}", project_root.display());
+        }
+
+        // Use a temp file so we don't depend on capturing mvn's stdout
+        // (Maven prints lifecycle banners to stdout regardless of -q).
+        let tmp = tempfile::NamedTempFile::new().context("create tempfile for mvn output")?;
+        let output_path = tmp.path().to_path_buf();
+        drop(tmp); // we just need the path; mvn will create the file
+
+        let status = Command::new("mvn")
+            .arg("-q")
+            .arg("dependency:tree")
+            .arg("-DoutputType=tgf")
+            .arg(format!("-DoutputFile={}", output_path.display()))
+            .arg("-DappendOutput=false")
+            .current_dir(project_root)
+            .status()
+            .context("invoke `mvn dependency:tree`")?;
+
+        if !status.success() {
+            anyhow::bail!("mvn dependency:tree exited {}", status);
+        }
+
+        let raw = std::fs::read_to_string(&output_path)
+            .with_context(|| format!("read tgf output from {}", output_path.display()))?;
+        let _ = std::fs::remove_file(&output_path);
+
+        Ok(parse_tgf(&raw))
+    }
+}
+
+fn parse_tgf(raw: &str) -> Vec<PackageRef> {
+    let mut out: BTreeSet<PackageRef> = BTreeSet::new();
+    for line in raw.lines() {
+        // Section delimiter: stop at `#` (edges follow).
+        if line.trim_start().starts_with('#') {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Split off the leading numeric ID. The root project is id 1
+        // and represents the project being audited; skip it.
+        let (id, rest) = match line.split_once(' ') {
+            Some(parts) => parts,
+            None => continue,
+        };
+        if id == "1" {
+            continue;
+        }
+        let rest = rest.trim();
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let group = parts[0];
+        let artifact = parts[1];
+        // parts[2] is packaging (jar/pom/war/...); ignored
+        let version = parts[3];
+        if group.is_empty() || artifact.is_empty() || version.is_empty() {
+            continue;
+        }
+        let name = format!("{group}:{artifact}");
+        out.insert(PackageRef::new(Ecosystem::Maven, name, version));
+    }
+    out.into_iter().collect()
 }
 
 // ── Dry-run resolver ─────────────────────────────────────────────────────
