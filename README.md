@@ -41,7 +41,7 @@ the roadmap.
 ## Quick start
 
 ```bash
-# macOS arm64 / Linux: one-liner
+# macOS / Linux: one-liner
 brew tap roussi/tap && brew install guardep
 
 # Audit any project
@@ -55,7 +55,7 @@ cd ~/code/my-frontend
 npm install              # blocked if any critical CVE / known malware / suspicious script
 ```
 
-Other platforms (Intel macOS, Windows, build from source) → see [Installation](#installation) below.
+For Windows or source builds, see [Installation](#installation) below.
 
 Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Backups are restored from `<rc>.guardep.bak`.
 
@@ -101,25 +101,16 @@ Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Bac
 
 Pick the row for your platform.
 
-### macOS arm64 (M1 / M2 / M3 / M4) — Homebrew
+### macOS (Apple Silicon or Intel) - Homebrew
 
 ```bash
 brew tap roussi/tap        # NOT `roussi/guardep`; tap repo is `homebrew-tap`
 brew install guardep
 ```
 
-### macOS Intel — Homebrew
+The same formula supports Apple Silicon and Intel macOS.
 
-```bash
-brew tap roussi/tap
-brew install guardep
-```
-
-Same command as Apple Silicon. The Intel binary is cross-compiled
-from the arm64 macOS runner so we don't depend on the deprecated
-Intel macOS runner queue.
-
-### Linux x86_64 / Linux arm64 — Homebrew
+### Linux x86_64 / Linux arm64 - Homebrew
 
 [Linuxbrew](https://docs.brew.sh/Homebrew-on-Linux) works the same way:
 
@@ -137,7 +128,7 @@ curl -L "https://github.com/roussi/guardep/releases/download/${TAG}/guardep-${TA
 sudo install -m 0755 "guardep-${TAG#v}-${ARCH}-unknown-linux-gnu/guardep" /usr/local/bin/guardep
 ```
 
-### Windows x86_64 — release zip
+### Windows x86_64 - release zip
 
 ```powershell
 $tag    = "v0.1.0"   # check https://github.com/roussi/guardep/releases/latest
@@ -148,9 +139,9 @@ Expand-Archive $asset -DestinationPath .
 Move-Item ".\guardep-$($tag.TrimStart('v'))-x86_64-pc-windows-msvc\guardep.exe" "$env:USERPROFILE\bin\guardep.exe"
 ```
 
-### Any platform — build from source
+### Any platform - build from source
 
-Requires Rust ≥ 1.81.
+Requires Rust >= 1.81.
 
 ```bash
 # Stable, pinned to a tag
@@ -170,7 +161,7 @@ sudo install -m 0755 target/release/guardep /usr/local/bin/guardep
 ### Verify the install
 
 ```bash
-guardep --version    # → guardep 0.1.0
+guardep --version    # -> guardep 0.1.0
 guardep --help
 ```
 
@@ -447,7 +438,8 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets
 ```
 
-Or just `claude` and run `/pre-push` - the bundled slash command (in [`.claude/commands/`](./.claude/commands/)) does all of the above and a `cargo audit` pass. The project ships an opinionated [`.claude/`](./.claude/) setup so contributors using Claude Code inherit the same conventions, hooks, and permissions.
+The repo-local `/pre-push` helper mirrors the checks above and adds
+a `cargo audit` pass.
 
 Useful one-offs while hacking:
 
