@@ -45,9 +45,10 @@ class Guardep < Formula
   end
 
   def install
-    # Each tarball contains a single `guardep-<ver>-<target>/guardep`
-    # binary; lift it onto PATH as plain `guardep`.
-    bin.install Dir["guardep-*-*/guardep"].first => "guardep"
+    # Tarball top-level dir is `guardep-<ver>-<target>/`. Homebrew
+    # strips it because the prefix matches the formula name, so the
+    # binary lands at the buildpath root.
+    bin.install "guardep"
   end
 
   def caveats
