@@ -213,6 +213,19 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Forward a single tool invocation to the real binary, skipping
+    /// the audit. Public, supported escape hatch — equivalent to
+    /// `$(which -a npm | grep -v guardep | head -1) install` but
+    /// discoverable, greppable in CI logs, and refused under
+    /// GUARDEP_STRICT=1. Prints a stderr warning on every use so the
+    /// bypass shows up in build output.
+    Skip {
+        /// Tool name (npm, pnpm, yarn, mvn).
+        tool: String,
+        /// Forwarded args (use `--` to pass flags to the tool).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Run as the underlying tool's shim (auto-dispatched via argv0).
     Shim {
         /// Tool name (npm, mvn, gradle). Required when invoked directly.
@@ -406,6 +419,7 @@ async fn main() -> Result<()> {
             yes,
         } => commands::install_shims::run(force, !no_wire_path, yes),
         Cmd::UninstallShims { force } => commands::install_shims::uninstall(force),
+        Cmd::Skip { tool, args } => commands::skip::run(&tool, &args).await,
         Cmd::Shim { tool, args } => shim::run(&tool, &args).await,
         Cmd::Info => commands::info::run(),
         Cmd::Cache(CacheCmd::Prune { days }) => commands::cache::prune(days),

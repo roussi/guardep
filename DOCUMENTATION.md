@@ -169,11 +169,18 @@ yarn install     # audited
 ```
 
 Bypass for one command (calls the real binary directly, skips
-audit):
+audit). Two equivalent forms — both print a loud stderr warning so
+the bypass shows up in CI logs and shell history:
 
 ```bash
-$(which -a npm | grep -v guardep | head -1) install
+guardep skip npm install               # subcommand form
+GUARDEP_BYPASS=1 npm install           # env-var form, composable in scripts
 ```
+
+Both refuse to run when `GUARDEP_STRICT=1` is set, so organisations
+that want zero bypass surface in CI add `GUARDEP_STRICT=1` to the
+workflow env. See [§4.4b](#44b-skip-bypass-the-shim-for-one-command)
+for the full subcommand reference.
 
 Reverse with `guardep uninstall-shims` (see [§4.4](#44-install-shims--uninstall-shims)).
 
@@ -200,7 +207,7 @@ Environment variables:
 | `CLICOLOR_FORCE` | Force ANSI colours even when piped |
 | `GUARDEP_LOG` | Override tracing filter (`guardep=debug,reqwest=info`) |
 | `GUARDEP_STRICT=1` | Fail closed when shim audit errors (default: fail open) |
-| `GUARDEP_BYPASS=1` | Reserved for shim bypass (not yet wired) |
+| `GUARDEP_BYPASS=1` | Skip the audit and forward to the real binary unchanged. Equivalent to `guardep skip <tool>`; loud stderr warning. Vetoed by `GUARDEP_STRICT=1`. |
 
 ### 4.1 `audit`
 
@@ -342,6 +349,45 @@ edit. Changes sit between `# >>> guardep-shim >>>` and
 `# <<< guardep-shim <<<` marker comments so removal is exact. On a
 tty the command asks before editing; in CI / piped input it
 proceeds.
+
+### 4.4b `skip` (bypass the shim for one command)
+
+Forward a single tool invocation to the real binary, skipping the
+audit. Public, supported escape hatch for the day-to-day case where
+you've reviewed a finding and want to push past it once.
+
+```
+guardep skip <tool> [args...]
+```
+
+| Argument | Purpose |
+|---|---|
+| `<tool>` | `npm`, `pnpm`, `yarn`, or `mvn` |
+| `args...` | Forwarded verbatim to the real binary |
+
+Behaviour:
+
+- Resolves the real binary via the same `locate_real_binary`
+  routine the shim uses (skips `~/.guardep/bin/` to avoid
+  recursion).
+- Prints a loud stderr warning on every invocation so the bypass
+  shows up in CI logs, `script` recordings, and shell history:
+  `! guardep skip: forwarding `npm install` without audit (real bin: /usr/.../npm)`
+- Vetoed by `GUARDEP_STRICT=1` — exits 1 without running the
+  command. Set it in CI workflows that must not allow any bypass.
+
+Examples:
+
+```bash
+guardep skip npm install some-pkg
+guardep skip yarn add react
+guardep skip mvn install -DskipTests
+GUARDEP_STRICT=1 guardep skip npm install   # exits 1, refuses to bypass
+```
+
+The env-var equivalent is `GUARDEP_BYPASS=1 npm install` (see the
+environment-variable table at the top of §4). Both routes share
+the same stderr warning + the same `GUARDEP_STRICT` veto.
 
 ### 4.5 `info`
 
@@ -1013,10 +1059,10 @@ GUARDEP_STRICT=1 npm install
 ### `npm install` hangs or fails after install-shims
 
 The shim refuses to proceed when `--no-package-lock` is set or when
-no lockfile exists. Generate one first:
+no lockfile exists. Generate one first using the bypass:
 
 ```bash
-$(which -a npm | grep -v guardep | head -1) install --package-lock-only
+guardep skip npm install --package-lock-only
 guardep install-shims --force
 ```
 
@@ -1051,8 +1097,13 @@ GUARDEP_LOG=guardep=debug,reqwest=info guardep audit
 ### Bypass the shim once
 
 ```bash
-$(which -a npm | grep -v guardep | head -1) install
+guardep skip npm install               # subcommand form
+GUARDEP_BYPASS=1 npm install           # env-var form
 ```
+
+Both print a loud stderr warning and are vetoed by
+`GUARDEP_STRICT=1`. See [§4.4b](#44b-skip-bypass-the-shim-for-one-command)
+for the full bypass reference.
 
 ### Restore an rc file backup
 

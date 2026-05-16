@@ -160,11 +160,19 @@ yarn install     # audited
 mvn install      # audited; mvn package and verify also intercepted
 ```
 
-Bypass for one command (calls real binary directly, skips audit):
+Bypass for one command (calls the real binary directly, skips
+audit; loud warning to stderr so the bypass shows up in CI / shell
+history). Two equivalent forms:
 
 ```bash
-$(which -a npm | grep -v guardep | head -1) install
+guardep skip npm install               # subcommand form
+GUARDEP_BYPASS=1 npm install           # env-var form, composable in scripts
 ```
+
+Both refuse to run when `GUARDEP_STRICT=1` is set (orgs that want
+zero bypass in CI add it to the workflow env). The legacy
+`$(which -a npm | grep -v guardep | head -1) install` still works
+but is no longer the documented path.
 
 Exit codes:
 - `0`: clean
