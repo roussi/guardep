@@ -4,7 +4,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const TOOLS: &[&str] = &["npm", "pnpm", "yarn", "mvn"];
+const TOOLS: &[&str] = &["npm", "pnpm", "yarn", "mvn", "cargo"];
 
 const MARKER_BEGIN: &str = "# >>> guardep-shim >>>";
 const MARKER_END: &str = "# <<< guardep-shim <<<";

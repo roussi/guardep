@@ -1,7 +1,7 @@
 # guardep — Documentation
 
 > **Package-manager firewall.** Deterministic dependency gate for
-> npm / pnpm / yarn / mvn installs, with Gradle audited via
+> npm / pnpm / yarn / mvn / cargo commands, with Gradle audited via
 > `gradle dependencies` (Gradle shim still planned). Blocks risky
 > dependencies *before* install-time code can run, not after.
 
@@ -59,16 +59,17 @@ open by default in every JavaScript install workflow.
 
 ### 1.2 The approach
 
-guardep installs PATH shims for `npm`, `pnpm`, and `yarn`. When you
-run `npm install`, the shim:
+guardep installs PATH shims for `npm`, `pnpm`, `yarn`, `mvn`, and
+`cargo`. When you run `npm install`, the shim:
 
 1. Resolves the *intended* dependency graph (existing lockfile, or
    temp-dir dry-run resolution for `npm install <newpkg>`).
 2. Runs every evaluator against that graph in parallel.
 3. If policy is satisfied, forwards to the real package manager.
 4. If policy is violated, exits non-zero and **never invokes the real
-   package manager**. The malicious `postinstall` hook never fires
-   because the package never lands in `node_modules`.
+   package manager**. For npm, the malicious `postinstall` hook never
+   fires because the package never lands in `node_modules`. For Cargo,
+   dependency `build.rs` code never gets compiled or run.
 
 This is a **firewall**, not an auditor: enforcement happens at the
 package-manager boundary, before code can run.
@@ -110,7 +111,7 @@ Three deployment models, in order of strictness:
 |---|---|---|
 | **Audit-only (CI)** | Run `guardep audit` in CI on every PR. | Per CI build, on the head lockfile. |
 | **PR diff (CI)** | Run `guardep diff --base <merge-base> --head .` in CI. | Per CI build, only NEW findings reported. Less noise. |
-| **Local firewall** | Run `guardep install-shims` once on a developer machine. | Every `npm`/`pnpm`/`yarn install` is gated. |
+| **Local firewall** | Run `guardep install-shims` once on a developer machine. | Every `npm`/`pnpm`/`yarn install`, Maven install phase, and Cargo build-side command is gated. |
 
 Models can co-exist. Most teams adopt PR diff in CI first, then
 optionally roll out shims locally for tight workflows.
@@ -242,11 +243,12 @@ guardep audit --path .   # against any project root
 
 ### 3.8 Wire it through your shell
 
-`guardep install-shims` symlinks `~/.guardep/bin/{npm,pnpm,yarn,mvn}`
+`guardep install-shims` symlinks `~/.guardep/bin/{npm,pnpm,yarn,mvn,cargo}`
 to the guardep binary and prepends that directory to `PATH`. The
 Maven shim only intercepts the dependency-resolving lifecycle
 phases (`install`, `package`, `verify`); other goals like `compile`
-or `test` pass through unchanged.
+or `test` pass through unchanged. The Cargo shim gates `build`,
+`check`, `test`, `run`, `doc`, `bench`, `fetch`, and `clippy`.
 
 ```bash
 guardep install-shims
@@ -254,7 +256,7 @@ guardep install-shims
 
 This does two things:
 
-1. Symlinks `~/.guardep/bin/{npm,pnpm,yarn}` to the guardep binary.
+1. Symlinks `~/.guardep/bin/{npm,pnpm,yarn,mvn,cargo}` to the guardep binary.
 2. Prepends `~/.guardep/bin` to `PATH` in `~/.zshrc`, `~/.bashrc`,
    `~/.bash_profile`, `~/.config/fish/config.fish` (Unix), or the
    PowerShell `$PROFILE` (Windows).
@@ -266,6 +268,8 @@ cd ./my-project
 npm install      # audited; blocks if malware/critical
 pnpm install     # audited
 yarn install     # audited
+mvn install      # audited
+cargo build      # audited
 ```
 
 Bypass for one command (calls the real binary directly, skips
@@ -462,7 +466,7 @@ guardep skip <tool> [args...]
 
 | Argument | Purpose |
 |---|---|
-| `<tool>` | `npm`, `pnpm`, `yarn`, or `mvn` |
+| `<tool>` | `npm`, `pnpm`, `yarn`, `mvn`, or `cargo` |
 | `args...` | Forwarded verbatim to the real binary |
 
 Behaviour:
@@ -482,6 +486,7 @@ Examples:
 guardep skip npm install some-pkg
 guardep skip yarn add react
 guardep skip mvn install -DskipTests
+guardep skip cargo build
 GUARDEP_STRICT=1 guardep skip npm install   # exits 1, refuses to bypass
 ```
 
@@ -520,17 +525,22 @@ guardep shim <tool> [args...]
 ```
 
 Internal dispatch path used when guardep is invoked via its
-`argv[0]` symlink (`~/.guardep/bin/npm` or `~/.guardep/bin/mvn`).
+`argv[0]` symlink (`~/.guardep/bin/npm`, `~/.guardep/bin/mvn`, or
+`~/.guardep/bin/cargo`).
 Direct invocation is supported for debugging:
 
 ```bash
 guardep shim npm install some-package
 guardep shim mvn install
+guardep shim cargo build
 ```
 
 Maven shim only intercepts the resolution-triggering phases
 (`install`, `package`, `verify`); other goals (`compile`, `test`,
 `clean`) pass through unchanged so audit cost stays bounded.
+Cargo shim intercepts commands that resolve, build, or run the locked
+dependency graph; lock-mutating and global install commands are
+forwarded unchanged for now.
 
 ---
 
@@ -998,6 +1008,7 @@ packages (left-pad).
 | Confirmed-malware feed | no | partial (via OSV) | no | yes | **yes (OSV + OSSF, version-aware ranges)** |
 | Pre-install gate (npm/pnpm/yarn) | no | no | no | yes (via wrapper) | **yes (PATH shim)** |
 | Pre-install gate (Maven) | no | no | no | partial | **yes (mvn install/package/verify)** |
+| Pre-build gate (Cargo) | no | yes (audit only) | yes (audit only) | partial | **yes (Cargo.lock + cargo shim)** |
 | Postinstall script analysis | no | no | no | yes | **yes (regex + AST)** |
 | Source behavior scanning | no | no | no | yes | **yes (cross-file AST + `--granular`)** |
 | Risk score (composite) | no | no | no | yes | **yes** |
@@ -1009,7 +1020,7 @@ packages (left-pad).
 | PR-aware diff (only NEW findings) | no | no | no | yes (paid) | **yes (`guardep diff` + GitHub Action)** |
 | CycloneDX SBOM export | no | partial | yes | yes (paid) | **yes** |
 | SARIF output | no | yes | yes | yes | **yes (with byte-range locations)** |
-| Multi-ecosystem (npm/PyPI/Cargo/Maven/Gradle/Go/Ruby) | no | yes | yes | yes | **npm + Maven shim + Gradle audit** |
+| Multi-ecosystem (npm/PyPI/Cargo/Maven/Gradle/Go/Ruby) | no | yes | yes | yes | **npm + Maven + Cargo shim + Gradle audit** |
 | Container / IaC scan | no | no | yes | no | **no** |
 | OSS license | yes | yes | yes | no (proprietary) | **yes (MIT)** |
 | Local-first / no SaaS | yes | yes | yes | no (uploads manifest) | **yes** |
@@ -1064,7 +1075,7 @@ crates/
       advisory.rs                Advisory model
       evaluator.rs               EvaluatorRegistry, parallel join_all
       report_data.rs             FindingsReport (display-tier filter, sort)
-      resolver.rs                npm/pnpm/yarn/Maven lockfile resolvers
+      resolver.rs                npm/pnpm/yarn/Cargo/Maven lockfile resolvers
                                  + temp-dir dry-run for `npm install <new>`
       range.rs                   semver + Maven range matching
       maven_version.rs           Apache version-order comparator
@@ -1220,7 +1231,7 @@ left in place so you can revert further if needed.
 
 ### 15.1 Done
 
-- Pre-install gate via PATH shim (npm/pnpm/yarn/mvn)
+- Pre-install/pre-build gate via PATH shim (npm/pnpm/yarn/mvn/cargo)
 - Temp-dir dry-run resolution for `npm install <newpkg>`
 - OSV.dev advisory matching with per-major fix selection
 - npm registry intel: maintainers, versions, abandonment, fresh
@@ -1245,6 +1256,7 @@ left in place so you can revert further if needed.
   ([`.github/actions/guardep-diff`](./.github/actions/guardep-diff/))
   that uploads SARIF
 - Maven dependency resolver + `mvn install`/`package`/`verify` shim
+- Cargo.lock resolver + `cargo build`/`check`/`test`/`fetch` shim
 - Gradle audit resolver (`gradle dependencies`, Groovy + Kotlin DSL)
 - Crates.io metadata + Homebrew formula template wired for the
   first tagged release
@@ -1264,7 +1276,7 @@ left in place so you can revert further if needed.
 
 ### 15.3 Future
 
-- **Cargo / pip / RubyGems** ecosystem support beyond Maven + npm.
+- **pip / RubyGems** ecosystem support beyond Maven + npm + Cargo.
 - **PostgreSQL / Redis cache backend** for shared CI caches.
 - **Web UI** for the JSON output (local-only, served by guardep).
 - **Plugin API** for organisation-specific evaluators.

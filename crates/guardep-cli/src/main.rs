@@ -116,14 +116,14 @@ Examples:
   $ guardep audit --severity high           # only High + Critical
   $ guardep audit --collapse --format json  # one row per package, JSON for CI
   $ guardep fix --apply                     # bump vulnerable deps, after y/N preview
-  $ guardep install-shims                   # wire npm/pnpm/yarn through guardep
+  $ guardep install-shims                   # wire npm/pnpm/yarn/mvn/cargo
 
 Environment variables:
   NO_COLOR              Disable ANSI colors
   CLICOLOR_FORCE        Force ANSI colors even when stdout is piped
   GUARDEP_LOG           Override tracing filter (e.g. `guardep=debug,reqwest=info`)
   GUARDEP_STRICT=1      Fail closed when shim audit errors (default: fail open)
-  GUARDEP_BYPASS=1      Reserved for shim bypass (not yet wired)
+  GUARDEP_BYPASS=1      Bypass the shim audit once, unless GUARDEP_STRICT=1
 
 Exit codes:
   0   clean (or `--fail-on never`)
@@ -168,7 +168,8 @@ enum Cmd {
         fail_on: FailOnArg,
         /// Force a specific lockfile when more than one is present
         /// (`package-lock.json` | `pnpm-lock.yaml` | `yarn.lock` |
-        /// `pom.xml`). Default: auto-detect.
+        /// `Cargo.lock` | `pom.xml` | `build.gradle` | `build.gradle.kts`).
+        /// Default: auto-detect.
         #[arg(long)]
         lockfile: Option<String>,
         /// Emit one source-behavior finding per call-site instead of
@@ -191,7 +192,7 @@ enum Cmd {
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// Install symlinks (npm/pnpm/yarn) into ~/.guardep/bin and wire
+    /// Install symlinks (npm/pnpm/yarn/mvn/cargo) into ~/.guardep/bin and wire
     /// PATH in the user's shell rc files (zsh/bash/fish on Unix,
     /// PowerShell `$PROFILE` on Windows). Pass --no-wire-path to
     /// skip rc file edits.
@@ -220,7 +221,7 @@ enum Cmd {
     /// GUARDEP_STRICT=1. Prints a stderr warning on every use so the
     /// bypass shows up in build output.
     Skip {
-        /// Tool name (npm, pnpm, yarn, mvn).
+        /// Tool name (npm, pnpm, yarn, mvn, cargo).
         tool: String,
         /// Forwarded args (use `--` to pass flags to the tool).
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -228,7 +229,7 @@ enum Cmd {
     },
     /// Run as the underlying tool's shim (auto-dispatched via argv0).
     Shim {
-        /// Tool name (npm, mvn, gradle). Required when invoked directly.
+        /// Tool name (npm, mvn, cargo, gradle). Required when invoked directly.
         tool: String,
         /// Forwarded args.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

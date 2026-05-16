@@ -2,8 +2,8 @@
 
 <p align="center">
   <strong>Package-manager firewall.</strong><br>
-  Deterministic dependency gate for <strong>npm / pnpm / yarn / mvn</strong>
-  installs, with <strong>Gradle</strong> audit support and a roadmap to
+  Deterministic dependency gate for <strong>npm / pnpm / yarn / mvn / cargo</strong>
+  commands, with <strong>Gradle</strong> audit support and a roadmap to
   full Gradle enforcement. Blocks risky dependencies <em>before</em>
   install-time code can run - not after.
 </p>
@@ -34,7 +34,9 @@ package manager when policy is violated.
 
 The strongest path today is JavaScript: npm, pnpm, and yarn shims.
 Maven gets both an `mvn install`/`package`/`verify` shim and a
-dependency-tree audit resolver. Gradle is audited via
+dependency-tree audit resolver. Cargo gets `Cargo.lock` audits plus
+a build-side shim for `cargo build`/`check`/`test`/`fetch`.
+Gradle is audited via
 `gradle dependencies` (Groovy or Kotlin DSL); a Gradle shim is on
 the roadmap.
 
@@ -47,10 +49,10 @@ brew tap roussi/tap && brew install guardep
 # Audit any project
 guardep audit --path ~/code/my-frontend
 
-# Wire npm/pnpm/yarn/mvn through guardep system-wide (asks first; reversible)
+# Wire npm/pnpm/yarn/mvn/cargo through guardep system-wide (asks first; reversible)
 guardep install-shims
 
-# Now every install is gated:
+# Now package-manager commands are gated:
 cd ~/code/my-frontend
 npm install              # blocked if any critical CVE / known malware / suspicious script
 ```
@@ -61,7 +63,7 @@ Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Bac
 
 ## Features
 
-- **Package-manager firewall.** PATH shims sit between you and `npm`/`pnpm`/`yarn`. guardep audits the resolved graph before forwarding. Critical/malware findings exit 2; the real package manager never runs.
+- **Package-manager firewall.** PATH shims sit between you and `npm`/`pnpm`/`yarn`/`mvn`/`cargo`. guardep audits the resolved graph before forwarding. Critical/malware findings exit 2; the real package manager never runs.
 - **Multi-source evaluators in parallel.** OSV.dev advisories, OSSF malicious-package feed, npm registry intel, source-behavior scanning, license checks, install-script analysis, and Sigstore provenance.
 - **EPSS + CISA KEV CVE enrichment.** Every CVE finding is annotated with its EPSS exploit-probability percentile and a KEV badge when the CVE is on CISA's Known Exploited Vulnerabilities list. KEV membership force-promotes severity to Critical; configurable EPSS threshold bumps severity one tier.
 - **Composite risk scoring.** Weighted 0-100 score from transparent reasons. Single-maintainer alone -> Info; few-versions + fresh-publish + single-maintainer -> Medium; typosquat alone -> High.
@@ -79,7 +81,7 @@ Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Bac
 
 | Capability                            | Status                                                                                     |
 | ------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Audit existing lockfile               | Works. npm/pnpm/yarn lockfiles parsed, evaluators run in parallel.                         |
+| Audit existing lockfile               | Works. npm/pnpm/yarn/Cargo lockfiles parsed, evaluators run in parallel.                   |
 | OSV.dev advisory matching             | Works. Batch endpoint, SQLite cache, semver range matching, per-major fix selection.       |
 | OSSF malicious-package feed           | Works. Two-stage protocol with OSV-shape version-range matching so only versions actually marked malicious flag (no name-only false positives). |
 | npm registry risk scoring             | Works. Maintainer count, version count, fresh-publish, abandonment, typosquat detection.   |
@@ -91,11 +93,12 @@ Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Bac
 | Pre-install gate (`npm ci`)           | Works when invoked through the shim AND lockfile is up-to-date.                            |
 | Pre-install gate (`npm install foo`)  | Works via temp-dir dry-run resolution (copies `package.json` into a tempdir, materializes lockfile with `npm install --package-lock-only --ignore-scripts`, audits the result). |
 | Maven                                 | Audit resolver via `mvn dependency:tree -DoutputType=tgf` plus a shim that intercepts `mvn install`/`package`/`verify` and refuses to forward on block. |
+| Cargo                                 | Audit resolver via `Cargo.lock` plus a shim that gates build-side commands before `build.rs` can run. |
 | Gradle                                | Audit resolver via `gradle dependencies --configuration runtimeClasspath` (prefers `./gradlew`); Groovy and Kotlin DSL both supported. Shim still planned. |
 | Maintainer-rotation (`new-maintainer`) | Works. Diffs cached maintainer set against fresh registry snapshot; gated by a 12h stabilisation window. |
 | SARIF output                          | Works. SARIF 2.1.0 with byte-range physicalLocation for source-behavior findings; ready for GitHub code-scanning. |
 | GitHub Action                         | Works. Composite action at [`.github/actions/guardep-diff`](./.github/actions/guardep-diff/) wraps `guardep diff` and uploads SARIF. |
-| Bypass via `/usr/local/bin/npm`       | **Possible.** PATH-based shim is not airtight against an attacker who already has shell access. |
+| Bypass via absolute package-manager path | **Possible.** PATH-based shim is not airtight against an attacker who already has shell access. |
 
 ## Installation
 
@@ -175,7 +178,7 @@ then use the `--git` form above.
 
 `guardep install-shims` does two things:
 
-1. Symlinks `~/.guardep/bin/{npm,pnpm,yarn,mvn}` to the guardep binary.
+1. Symlinks `~/.guardep/bin/{npm,pnpm,yarn,mvn,cargo}` to the guardep binary.
 2. Prepends `~/.guardep/bin` to `PATH` in `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.config/fish/config.fish` (Unix) or `$PROFILE` (Windows PowerShell).
 
 Each rc file is backed up to `<file>.guardep.bak` before the first edit. Changes sit between `# >>> guardep-shim >>>` / `# <<< guardep-shim <<<` marker comments so removal is exact. On a tty the command asks before editing; in CI / piped input it proceeds.
@@ -217,6 +220,7 @@ npm install      # audited; blocks if malware/critical
 pnpm install     # audited
 yarn install     # audited
 mvn install      # audited; mvn package and verify also intercepted
+cargo build      # audited; cargo check/test/fetch also intercepted
 ```
 
 Bypass for one command (calls the real binary directly, skips
@@ -379,7 +383,7 @@ deduped, and rendered together.
 
 **Does NOT defend against:**
 - **Targeted attacks against guardep itself.** A malicious shell rc, modified shim binary, or PATH manipulation defeats it.
-- **Bypass via absolute path.** `/usr/local/bin/npm` skips the shim entirely. This is by design - the shim is friction, not enforcement.
+- **Bypass via absolute path.** `/usr/local/bin/npm` or the real `cargo` binary skips the shim entirely. This is by design - the shim is friction, not enforcement.
 - **`--no-package-lock`.** The shim refuses to proceed in this mode (exit 1) rather than running blind.
 - **Yarn lockfiles, pre-Berry.** Currently parses `package-lock.json` and Berry's resolved lockfile only.
 - **Forged Sigstore attestations.** We verify presence, identity, Fulcio cert chain, SCT, and DSSE signature. We do **not** yet verify the Rekor inclusion proof - the implementation [merged upstream](https://github.com/sigstore/sigstore-rs/pull/543) in Jan 2026 but isn't in a published `sigstore` crate version. Pinned to released crates.io versions only (no `git` deps for crypto code); will bump as soon as the next sigstore release ships.
@@ -391,7 +395,7 @@ deduped, and rendered together.
 
 |                                   | npm audit | OSV-Scanner | Trivy        | Socket / Phylum  | **guardep**          |
 | --------------------------------- | --------- | ----------- | ------------ | ---------------- | -------------------- |
-| Package-manager enforcement       | no        | no          | no           | yes              | **npm/pnpm/yarn/mvn now; Gradle planned** |
+| Package-manager enforcement       | no        | no          | no           | yes              | **npm/pnpm/yarn/mvn/cargo now; Gradle planned** |
 | PR / lockfile audit               | yes       | yes         | partial      | yes              | **yes**              |
 | Multi-source dependency intel     | partial   | no          | no           | yes              | **yes**              |
 | Malware-class policy              | no        | no          | indirect     | yes              | **yes (OSV + OSSF, version-aware)** |
@@ -417,6 +421,7 @@ deduped, and rendered together.
 - [x] **Sigstore crypto verification.** Fulcio cert chain, DSSE signature, SCT, identity policy bound to the GitHub Actions OIDC issuer.
 - [x] **Maven resolver** (`mvn dependency:tree -DoutputType=tgf`) with Apache version-order comparator.
 - [x] **Maven shim.** Intercepts `mvn install`/`package`/`verify` and refuses to forward on block.
+- [x] **Cargo resolver and shim.** Parses `Cargo.lock` and gates locked-graph build commands before `build.rs` can run.
 - [x] **Gradle audit resolver** (`gradle dependencies --configuration runtimeClasspath`); Groovy and Kotlin DSL both supported.
 - [x] **CycloneDX 1.5 SBOM** + **SARIF 2.1.0** output (with byte-range locations for source-behavior findings).
 - [x] **`guardep diff`** PR-aware audit + composite **GitHub Action** that wraps it and uploads SARIF.
@@ -426,7 +431,7 @@ deduped, and rendered together.
 - [ ] **Rekor inclusion proof.** Pending [sigstore-rs#543](https://github.com/sigstore/sigstore-rs/pull/543) shipping to crates.io.
 - [ ] **First tagged release** publishing to the Homebrew tap and crates.io.
 - [ ] **Gradle shim** (intercept install-equivalent invocations).
-- [ ] **Cargo / pip / RubyGems** ecosystem support beyond Maven + npm.
+- [ ] **pip / RubyGems** ecosystem support beyond Maven + npm + Cargo.
 
 ## Contributing
 

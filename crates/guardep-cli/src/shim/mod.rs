@@ -2,6 +2,7 @@ use anyhow::Result;
 use owo_colors::OwoColorize;
 use std::path::Path;
 
+mod cargo;
 mod mvn;
 mod npm;
 
@@ -13,7 +14,7 @@ pub fn detect_invocation() -> Option<String> {
     let arg0 = std::env::args().next()?;
     let name = Path::new(&arg0).file_name()?.to_str()?.to_string();
     match name.as_str() {
-        "npm" | "pnpm" | "yarn" | "mvn" => Some(name),
+        "npm" | "pnpm" | "yarn" | "mvn" | "cargo" => Some(name),
         _ => None,
     }
 }
@@ -42,6 +43,7 @@ pub async fn run(tool: &str, args: &[String]) -> Result<()> {
     match tool {
         "npm" | "pnpm" | "yarn" => npm::dispatch(tool, args).await,
         "mvn" => mvn::dispatch(tool, args).await,
+        "cargo" => cargo::dispatch(tool, args).await,
         // Stale shim from a prior install. Tell the user explicitly
         // that we're NOT auditing, then forward.
         "gradle" | "gradlew" => {
