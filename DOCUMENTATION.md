@@ -542,6 +542,75 @@ Cargo shim intercepts commands that resolve, build, or run the locked
 dependency graph; lock-mutating and global install commands are
 forwarded unchanged for now.
 
+### 4.5 Cargo coverage (honest scope)
+
+Cargo support is **deliberately narrower** than npm. The shim and
+resolver are production-grade; most npm-specific evaluators
+intentionally don't run on Cargo packages.
+
+| Cargo capability | Status | Notes |
+|---|---|---|
+| `Cargo.lock` v3/v4 parsing | works | Filters to `registry+https://github.com/rust-lang/crates.io-index` and the sparse equivalents. Git, path, and workspace-member entries are skipped. |
+| OSV.dev advisory matching | works | OSV aggregates **GHSA + RustSec + others**, so coverage is a strict superset of any RustSec-only tool. Semver matching reuses the npm-side range engine. |
+| EPSS + CISA KEV enrichment | works | Ecosystem-agnostic; every Cargo CVE is annotated with EPSS percentile and a KEV badge when applicable. |
+| Cargo shim | works | Intercepts `build`, `check`, `test`, `fetch`, `run`, `bench`, `clippy`, `doc`. Audits the resolved `Cargo.lock` graph **before** `build.rs` executes. Honors `GUARDEP_STRICT=1` and `GUARDEP_BYPASS=1`. |
+| CycloneDX / SARIF export | works | Same code path as npm. |
+| Risk scoring from crates.io registry | **not implemented** | Equivalent of the npm-registry evaluator (maintainer count, version count, fresh-publish, abandonment, typosquat) doesn't run on Cargo packages. crates.io has the data; the evaluator is hard-gated to `Ecosystem::Npm`. |
+| `build.rs` static analysis | **not implemented** | Cargo equivalent of postinstall AST. No scanner yet. |
+| Sigstore / crates.io provenance | **not implemented** | crates.io has no Sigstore-equivalent yet; nothing to verify. |
+| Rust source-behavior scanning | **not implemented** | Current scanner uses `swc_ecma_parser` (JS AST). A Rust scanner is not on the roadmap. |
+| Cargo.toml license field | **not implemented** | License evaluator is npm-only. `[package].license` is standard but unparsed. |
+| `yanked` crate detection | **not implemented** | crates.io has the `yanked` flag (the deprecation equivalent); not currently consumed. |
+| Pre-update dry-run | **not implemented** | npm-style temp-dir resolution exists only for npm; `cargo add` / `cargo update` aren't pre-audited. |
+| Shim coverage of lock-mutating commands | **not implemented** | `cargo add`, `cargo update`, `cargo install` are forwarded unchanged. Audit triggers on the next build-side command. |
+
+**Use it for:** CVE-driven blocking on the resolved graph,
+build-time enforcement before `build.rs`, EPSS/KEV signal on
+RustSec/GHSA advisories.
+
+**Don't rely on it alone for:** package-takeover heuristics on
+Cargo, build-script behavior analysis, license / dependency-ban
+policy.
+
+#### 4.5.1 `guardep` vs `cargo-audit` (empirical)
+
+Run against guardep's own `Cargo.lock` on 2026-05-16:
+
+| Dimension | `cargo-audit 0.22.1` | `guardep audit` |
+|---|---|---|
+| Vulns reported | 1 | **3** |
+| `RUSTSEC-2023-0071` on `rsa 0.9.10` | yes | **yes** (EPSS p72, no KEV) |
+| `GHSA-4v58-8p28-2rq3` on `tough 0.21.0` | no | **yes** |
+| `GHSA-8m7c-8m39-rv4x` on `tough 0.21.0` | no | **yes** |
+| Advisory source | RustSec Advisory DB only | OSV.dev (GHSA + RustSec + others) |
+| EPSS percentile | no | **yes** |
+| CISA KEV badge | no | **yes** |
+| Build-time gate (block before `build.rs`) | no (audit only) | **yes** (cargo shim) |
+| Resolver scope | crates.io only | crates.io only |
+| Wall time | ~1 s | ~3.6 s |
+
+The extra GHSA findings aren't a cargo-audit bug - they aren't in
+the RustSec DB. Anything published only as a GitHub Security
+Advisory is invisible to RustSec-only tools. OSV.dev aggregates
+both feeds, so guardep gets the union.
+
+#### 4.5.2 Recommended companion: `cargo-deny`
+
+For **license policy** and **dependency bans** on Cargo,
+[`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) is
+the right tool and there is no overlap worth replicating. Run it
+alongside guardep:
+
+```bash
+guardep audit --path .   # CVE/malware + build-time gate
+cargo deny check         # license/bans + duplicate-versions + sources
+```
+
+`cargo-deny` is purpose-built for the Cargo ecosystem's
+license-field conventions and `deny.toml` policy model. guardep's
+license evaluator is npm-only today and porting it would
+duplicate `cargo-deny` poorly.
+
 ---
 
 ## 5. Output formats

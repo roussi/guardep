@@ -100,6 +100,57 @@ Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Bac
 | GitHub Action                         | Works. Composite action at [`.github/actions/guardep-diff`](./.github/actions/guardep-diff/) wraps `guardep diff` and uploads SARIF. |
 | Bypass via absolute package-manager path | **Possible.** PATH-based shim is not airtight against an attacker who already has shell access. |
 
+### Cargo coverage (honest scope)
+
+guardep's Cargo support is intentionally narrower than its npm
+support. What ships today:
+
+| Cargo capability | Status |
+| --- | --- |
+| `Cargo.lock` v3/v4 parsing, crates.io filter, dedup | works |
+| OSV.dev advisory matching (GHSA + RustSec via OSV aggregation) | works |
+| Semver range matching for Cargo ranges | works |
+| EPSS percentile + CISA KEV enrichment on Cargo CVEs | works |
+| Shim for `cargo build`/`check`/`test`/`fetch`/`run`/`bench`/`clippy`/`doc` | works |
+| CycloneDX 1.5 SBOM + SARIF 2.1.0 export for Cargo findings | works |
+| Risk-score reasons (fresh-publish, single-maintainer, etc.) from crates.io | **not implemented** |
+| `build.rs` static analysis (Cargo equivalent of postinstall AST) | **not implemented** |
+| Sigstore / crates.io provenance | **not implemented** (no crates.io equivalent yet) |
+| Rust source-behavior scanning (current scanner is JS AST only) | **not implemented** |
+| Cargo.toml license field parsing + deny-list | **not implemented** (npm-only today) |
+| `yanked` crate detection (crates.io equivalent of npm `deprecated`) | **not implemented** |
+| Dry-run pre-audit for `cargo add` / `cargo update` (npm-style temp-dir resolve) | **not implemented** |
+| Cargo shim for lock-mutating commands (`add`, `update`, `install`) | **not implemented** (forwarded unchanged) |
+
+Cargo support is **advisory parity, not feature parity** with npm.
+If your Rust threat model is mostly known CVEs in transitive
+dependencies, guardep covers it. If you need build-script behavior
+analysis or maintainer-rotation alerts on a Cargo project, don't
+rely on guardep alone yet.
+
+#### vs `cargo-audit`
+
+Both tools cover Cargo CVEs but draw on different feeds and add
+different signal. Empirical comparison on guardep's own
+`Cargo.lock` (513 crates.io packages, run on 2026-05-16):
+
+| Tool | Advisories found | Source | EPSS / KEV | Build-time gate |
+| --- | --- | --- | --- | --- |
+| `cargo-audit 0.22.1` | 1 (`RUSTSEC-2023-0071` on `rsa 0.9.10`) | RustSec Advisory DB only | no | no (audit only) |
+| `guardep audit` | 3 (same `RUSTSEC` + `GHSA-4v58-8p28-2rq3` and `GHSA-8m7c-8m39-rv4x` on `tough 0.21.0`) | OSV.dev (aggregates GHSA + RustSec + others) | yes | yes (`cargo` shim blocks before `build.rs` runs) |
+
+The two extra GHSA advisories aren't a cargo-audit bug - they
+just aren't in the RustSec DB. Anything published only as a
+GitHub Security Advisory is invisible to RustSec-only tools.
+guardep also annotates the RUSTSEC finding with EPSS p72 (CISA's
+exploit-probability percentile) and shows a KEV badge when the
+CVE is on CISA's Known Exploited Vulnerabilities list.
+
+For **license policy and dependency bans** on Cargo projects, use
+[`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny)
+alongside guardep. It's purpose-built for those checks on the
+Cargo ecosystem and there's no overlap worth replicating.
+
 ## Installation
 
 Pick the row for your platform.
