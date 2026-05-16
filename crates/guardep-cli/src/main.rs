@@ -116,8 +116,8 @@ Examples:
   $ guardep audit --severity high           # only High + Critical
   $ guardep audit --collapse --format json  # one row per package, JSON for CI
   $ guardep fix --apply                     # bump vulnerable deps, after y/N preview
-  $ guardep install-shims                   # wire npm/pnpm/yarn/mvn/cargo (interactive)
-  $ guardep install-shims --tools npm,cargo # wire only those, skip the prompt
+  $ guardep shims install                   # wire npm/pnpm/yarn/mvn/cargo (interactive)
+  $ guardep shims install --tools npm,cargo # wire only those, skip the prompt
   $ guardep shims list                      # show which shims are active
   $ guardep shims enable cargo              # turn one shim on without re-wiring PATH
 
@@ -148,10 +148,40 @@ enum CacheCmd {
 
 #[derive(Subcommand)]
 enum ShimsCmd {
+    /// Install symlinks (npm/pnpm/yarn/mvn/cargo) into
+    /// `~/.guardep/bin` and wire PATH in the user's shell rc files
+    /// (zsh/bash/fish on Unix, PowerShell `$PROFILE` on Windows). Pass
+    /// `--no-wire-path` to skip rc file edits. When stdout is a TTY
+    /// and `--tools` is omitted, presents an interactive selection
+    /// seeded by detected lockfiles in the current directory.
+    Install {
+        #[arg(long)]
+        force: bool,
+        /// Skip editing shell rc files. Symlinks are created either
+        /// way; you'll need to add `~/.guardep/bin` to PATH manually.
+        #[arg(long)]
+        no_wire_path: bool,
+        /// Skip the interactive confirmation before editing rc files.
+        /// Use in CI or scripted installs.
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Comma-separated list of tools to wire (`npm,pnpm,yarn,mvn,cargo`).
+        /// Use `all` for the full set. When omitted, interactive
+        /// selection runs in a TTY; in CI the detected lockfiles drive
+        /// the choice, falling back to all tools if none are present.
+        #[arg(long, value_delimiter = ',')]
+        tools: Option<Vec<String>>,
+    },
+    /// Remove guardep shim symlinks from `~/.guardep/bin` and strip
+    /// the guardep PATH block from shell rc files.
+    Uninstall {
+        #[arg(long)]
+        force: bool,
+    },
     /// Show which package-manager shims are currently active.
     List,
     /// Enable one or more shims by adding their symlink under
-    /// `~/.guardep/bin/`. Requires `install-shims` to have run.
+    /// `~/.guardep/bin/`. Requires `shims install` to have run.
     Enable {
         #[arg(required = true)]
         tools: Vec<String>,
@@ -213,38 +243,10 @@ enum Cmd {
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// Install symlinks (npm/pnpm/yarn/mvn/cargo) into ~/.guardep/bin and wire
-    /// PATH in the user's shell rc files (zsh/bash/fish on Unix,
-    /// PowerShell `$PROFILE` on Windows). Pass --no-wire-path to
-    /// skip rc file edits. When stdout is a TTY and `--tools` is
-    /// omitted, presents an interactive selection seeded by detected
-    /// lockfiles in the current directory.
-    InstallShims {
-        #[arg(long)]
-        force: bool,
-        /// Skip editing shell rc files. Symlinks are created either way;
-        /// you'll need to add `~/.guardep/bin` to PATH manually.
-        #[arg(long)]
-        no_wire_path: bool,
-        /// Skip the interactive confirmation before editing rc files.
-        /// Use in CI or scripted installs.
-        #[arg(long, short = 'y')]
-        yes: bool,
-        /// Comma-separated list of tools to wire (`npm,pnpm,yarn,mvn,cargo`).
-        /// Use `all` for the full set. When omitted, interactive selection
-        /// runs in a TTY; in CI the detected lockfiles drive the choice,
-        /// falling back to all tools if none are present.
-        #[arg(long, value_delimiter = ',')]
-        tools: Option<Vec<String>>,
-    },
-    /// Remove guardep shim symlinks from ~/.guardep/bin and strip the
-    /// guardep PATH block from shell rc files.
-    UninstallShims {
-        #[arg(long)]
-        force: bool,
-    },
-    /// Inspect or change which package-manager shims are active after
-    /// `install-shims` has run. PATH wiring is untouched.
+    /// Manage package-manager shims: install, uninstall, list,
+    /// enable, disable. `shims install` wires symlinks + PATH;
+    /// `shims uninstall` reverses it. List/enable/disable adjust the
+    /// active set without re-wiring PATH.
     #[command(subcommand)]
     Shims(ShimsCmd),
     /// Forward a single tool invocation to the real binary, skipping
@@ -451,13 +453,13 @@ async fn main() -> Result<()> {
             apply,
             yes,
         } => commands::fix::run(&path, target.into(), apply, yes).await,
-        Cmd::InstallShims {
+        Cmd::Shims(ShimsCmd::Install {
             force,
             no_wire_path,
             yes,
             tools,
-        } => commands::install_shims::run(force, !no_wire_path, yes, tools),
-        Cmd::UninstallShims { force } => commands::install_shims::uninstall(force),
+        }) => commands::install_shims::run(force, !no_wire_path, yes, tools),
+        Cmd::Shims(ShimsCmd::Uninstall { force }) => commands::install_shims::uninstall(force),
         Cmd::Shims(ShimsCmd::List) => commands::shims::list(),
         Cmd::Shims(ShimsCmd::Enable { tools }) => commands::shims::enable(&tools),
         Cmd::Shims(ShimsCmd::Disable { tools }) => commands::shims::disable(&tools),

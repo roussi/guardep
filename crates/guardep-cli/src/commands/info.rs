@@ -47,7 +47,7 @@ pub fn run() -> Result<()> {
             );
         }
     } else {
-        println!("  shims:          not installed (run `guardep install-shims`)");
+        println!("  shims:          not installed (run `guardep shims install`)");
     }
 
     // Cache file existence and size — quick health check.

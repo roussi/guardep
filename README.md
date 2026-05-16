@@ -51,10 +51,10 @@ guardep audit --path ~/code/my-frontend
 
 # Wire npm/pnpm/yarn/mvn/cargo through guardep system-wide (asks first; reversible)
 # Interactive: pre-checks tools matching lockfiles found in cwd.
-guardep install-shims
+guardep shims install
 
 # Or explicit allowlist (skips the prompt):
-guardep install-shims --tools npm,cargo
+guardep shims install --tools npm,cargo
 
 # Adjust later without re-running install:
 guardep shims list
@@ -68,7 +68,7 @@ npm install              # blocked if any critical CVE / known malware / suspici
 
 For Windows or source builds, see [Installation](#installation) below.
 
-Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Backups are restored from `<rc>.guardep.bak`.
+Uninstall any time: `guardep shims uninstall` strips the shims and rc edits. Backups are restored from `<rc>.guardep.bak`.
 
 ## Features
 
@@ -84,7 +84,7 @@ Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Bac
 - **AST static analysis** of postinstall scripts. Detects process-spawn, credential reads, dynamic code execution, base64-decode -> eval chains, dynamic require/import, network calls. AST results promote regex severity (never demote).
 - **Sigstore crypto verification.** Fulcio cert chain, DSSE signature, SCT. Identity bound to GitHub Actions OIDC. Falls back to presence + identity offline. Rekor inclusion proof pending upstream sigstore-rs release.
 - **Honest output.** Findings sorted Critical -> Info, alphabetical within tier. `--severity` filters display threshold. `--fail-on` controls exit code separately. Composite risk scores show every contributing reason.
-- **Reversible install.** `install-shims` backs up rc files to `<file>.guardep.bak` and brackets edits with marker comments. `uninstall-shims` strips the block exactly.
+- **Reversible install.** `shims install` backs up rc files to `<file>.guardep.bak` and brackets edits with marker comments. `shims uninstall` strips the block exactly.
 
 ### Capability matrix
 
@@ -236,7 +236,7 @@ then use the `--git` form above.
 
 ### Wire it through your shell
 
-`guardep install-shims` does two things:
+`guardep shims install` does two things:
 
 1. Symlinks `~/.guardep/bin/<tool>` for each selected tool, pointing at the guardep binary.
 2. Prepends `~/.guardep/bin` to `PATH` in `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.config/fish/config.fish` (Unix) or `$PROFILE` (Windows PowerShell).
@@ -259,7 +259,7 @@ guardep shims enable cargo         # start gating cargo
 guardep shims disable mvn yarn     # stop gating Maven and Yarn
 ```
 
-Reverse everything with `guardep uninstall-shims`: strips the symlinks and the marker block from every rc file. Backups stay in place.
+Reverse everything with `guardep shims uninstall`: strips the symlinks and the marker block from every rc file. Backups stay in place.
 
 ## Usage
 
@@ -283,7 +283,7 @@ Findings are sorted Critical -> Info, then alphabetically by package within each
 
 ### Use as a shim
 
-After `guardep install-shims` and a shell restart:
+After `guardep shims install` and a shell restart:
 
 ```bash
 cd ./my-project
@@ -436,7 +436,7 @@ crates/
                   SQLite cache, semver matcher, policy engine,
                   lockfile resolvers
   guardep-cli/    Binary + shim dispatch (busybox argv0 pattern) +
-                  commands (audit, diff, fix, install-shims, info,
+                  commands (audit, diff, fix, shims, info,
                   cache)
 ```
 

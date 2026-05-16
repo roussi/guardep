@@ -12,9 +12,9 @@ crates/
   guardep-core/     library: ecosystem types, advisory + finding models,
                     evaluators (osv, postinstall, intel, provenance),
                     resolvers, policy engine, cache
-  guardep-cli/      bin `guardep`: clap CLI, audit/fix/install-shims/
-                    uninstall-shims/info/cache subcommands, npm shim
-                    via busybox-style argv0 dispatch
+  guardep-cli/      bin `guardep`: clap CLI, audit/fix/shims
+                    (install/uninstall/list/enable/disable)/info/cache
+                    subcommands, npm shim via busybox-style argv0 dispatch
 ```
 
 ## Cardinal rules
@@ -89,11 +89,11 @@ Helper: `scrub_shim_from_path()` in `core/src/resolver.rs`.
 
 `crates/guardep-cli/src/main.rs` checks `argv[0]` first. If basename is
 `npm`/`pnpm`/`yarn`, it routes to `shim::run` instead of clap.
-`install-shims` writes symlinks to `~/.guardep/bin/{npm,pnpm,yarn}` ->
-`target/release/guardep` and injects `PATH=$HOME/.guardep/bin:$PATH`
+`shims install` writes symlinks to `~/.guardep/bin/{npm,pnpm,yarn,mvn,cargo}`
+-> `target/release/guardep` and injects `PATH=$HOME/.guardep/bin:$PATH`
 into shell rc files (zsh/bash/fish/PowerShell), bracketed by
 `# >>> guardep-shim >>>` ... `# <<< guardep-shim <<<` markers so
-`uninstall-shims` can strip them exactly. One-shot `*.guardep.bak`
+`shims uninstall` can strip them exactly. One-shot `*.guardep.bak`
 backup before any rc edit.
 
 Tty prompt before injection unless `--yes` or non-tty stdin.

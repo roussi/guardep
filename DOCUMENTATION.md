@@ -22,8 +22,7 @@ operators, integrators, and contributors.
    - [`audit`](#41-audit)
    - [`diff`](#42-diff)
    - [`fix`](#43-fix)
-   - [`install-shims` / `uninstall-shims`](#44-install-shims--uninstall-shims)
-   - [`shims` (manage active shims)](#44a-shims-manage-active-shims)
+   - [`shims` (install / uninstall / list / enable / disable)](#44-shims)
    - [`info`](#45-info)
    - [`cache prune`](#46-cache-prune)
    - [`shim` (internal)](#47-shim-internal)
@@ -88,7 +87,7 @@ package-manager boundary, before code can run.
   scores show every contributing reason.
 - **Reversible install.** Every shell rc file edit is bracketed by
   marker comments and backed up to `<file>.guardep.bak`.
-  `uninstall-shims` strips the block exactly.
+  `shims uninstall` strips the block exactly.
 - **No backwards-compat shims.** Pre-1.0 project; if a name is
   wrong, change it everywhere.
 - **OSS, MIT.** No paid tier, no feature gating.
@@ -112,7 +111,7 @@ Three deployment models, in order of strictness:
 |---|---|---|
 | **Audit-only (CI)** | Run `guardep audit` in CI on every PR. | Per CI build, on the head lockfile. |
 | **PR diff (CI)** | Run `guardep diff --base <merge-base> --head .` in CI. | Per CI build, only NEW findings reported. Less noise. |
-| **Local firewall** | Run `guardep install-shims` once on a developer machine. | Every `npm`/`pnpm`/`yarn install`, Maven install phase, and Cargo build-side command is gated. |
+| **Local firewall** | Run `guardep shims install` once on a developer machine. | Every `npm`/`pnpm`/`yarn install`, Maven install phase, and Cargo build-side command is gated. |
 
 Models can co-exist. Most teams adopt PR diff in CI first, then
 optionally roll out shims locally for tight workflows.
@@ -244,7 +243,7 @@ guardep audit --path .   # against any project root
 
 ### 3.8 Wire it through your shell
 
-`guardep install-shims` creates symlinks under `~/.guardep/bin/` for
+`guardep shims install` creates symlinks under `~/.guardep/bin/` for
 the package managers you want gated, and prepends that directory to
 `PATH`. By default it inspects the cwd for known lockfiles
 (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `pom.xml`,
@@ -266,9 +265,9 @@ real lock is touched. Off-registry deps (`--path` / `--git` /
 keys for those sources.
 
 ```bash
-guardep install-shims                       # interactive in a TTY
-guardep install-shims --tools npm,cargo     # explicit allowlist
-guardep install-shims --tools all -y        # every tool, no prompt
+guardep shims install                       # interactive in a TTY
+guardep shims install --tools npm,cargo     # explicit allowlist
+guardep shims install --tools all -y        # every tool, no prompt
 ```
 
 This does two things:
@@ -303,7 +302,7 @@ guardep shims enable cargo         # start gating cargo
 guardep shims disable mvn yarn     # stop gating Maven and Yarn
 ```
 
-See [§4.4a](#44a-shims-manage-active-shims) for the full reference.
+See [§4.4](#44-shims) for the full reference.
 
 Bypass for one command (calls the real binary directly, skips
 audit). Two equivalent forms — both print a loud stderr warning so
@@ -319,7 +318,7 @@ that want zero bypass surface in CI add `GUARDEP_STRICT=1` to the
 workflow env. See [§4.4b](#44b-skip-bypass-the-shim-for-one-command)
 for the full subcommand reference.
 
-Reverse with `guardep uninstall-shims` (see [§4.4](#44-install-shims--uninstall-shims)).
+Reverse with `guardep shims uninstall` (see [§4.4](#44-shims)).
 
 ---
 
@@ -464,16 +463,23 @@ Findings without a fix-able remedy (postinstall, risk-score,
 provenance, source-behavior, license) are listed as manual TODOs
 rather than version bumps.
 
-### 4.4 `install-shims` / `uninstall-shims`
+### 4.4 `shims`
 
-Wire (and unwire) guardep into the user's shell. Shim files are
-symlinks that dispatch back to the guardep binary via the
-busybox-style `argv[0]` pattern.
+Manage the package-manager shims that wire guardep into the user's
+shell. Shim files are symlinks that dispatch back to the guardep
+binary via the busybox-style `argv[0]` pattern.
 
 ```
-guardep install-shims [--force] [--no-wire-path] [-y / --yes] [--tools npm,cargo,...]
-guardep uninstall-shims [--force]
+guardep shims install   [--force] [--no-wire-path] [-y / --yes] [--tools npm,cargo,...]
+guardep shims uninstall [--force]
+guardep shims list
+guardep shims enable    <tool> [<tool>...]
+guardep shims disable   <tool> [<tool>...]
 ```
+
+#### 4.4.1 `shims install`
+
+Wire shims + prepend `~/.guardep/bin` to `PATH` in shell rc files.
 
 | Flag | Default | Purpose |
 |---|---|---|
@@ -485,35 +491,32 @@ guardep uninstall-shims [--force]
 Each rc file is backed up to `<file>.guardep.bak` before the first
 edit. Changes sit between `# >>> guardep-shim >>>` and
 `# <<< guardep-shim <<<` marker comments so removal is exact. On a
-tty the command asks before editing; in CI / piped input it
-proceeds.
+TTY the command asks before editing; in CI / piped input it proceeds.
 
 **Tool selection.** When `--tools` is omitted, guardep inspects the
 cwd for known lockfiles (`package-lock.json`, `pnpm-lock.yaml`,
 `yarn.lock`, `pom.xml`, `Cargo.lock`) and pre-checks the matching
 shims. In a TTY the user can accept, edit, or refuse. In CI / non-TTY
 the detected set is used, falling back to every tool when no lockfile
-is present (preserves the v0 behaviour for global installs).
+is present.
 
 ```bash
-guardep install-shims --tools npm,cargo     # explicit allowlist
-guardep install-shims --tools all           # gate every supported tool
-guardep install-shims -y                    # accept detected defaults
+guardep shims install --tools npm,cargo     # explicit allowlist
+guardep shims install --tools all           # gate every supported tool
+guardep shims install -y                    # accept detected defaults
 ```
 
-### 4.4a `shims` (manage active shims)
+#### 4.4.2 `shims uninstall`
 
-Inspect or change which package-manager shims are active after
-`install-shims` has run. PATH wiring is left alone, so flipping a
-shim on or off is a one-line change.
+Reverse of install: removes every symlink under `~/.guardep/bin/`
+and strips the marker block from each rc file. Backups stay in place
+so users can roll back manually if needed.
 
-```
-guardep shims list
-guardep shims enable <tool> [<tool>...]
-guardep shims disable <tool> [<tool>...]
-```
+#### 4.4.3 `shims list / enable / disable`
 
-Examples:
+Adjust the active set after install, without re-running the PATH
+wiring step. PATH wiring stays in place; only the symlinks under
+`~/.guardep/bin/` are flipped.
 
 ```bash
 guardep shims list                 # which shims are currently active
@@ -522,10 +525,10 @@ guardep shims disable mvn yarn     # stop gating Maven and Yarn
 ```
 
 `shims enable` requires `~/.guardep/bin/` to exist — run
-`install-shims` first to wire PATH. `shims disable` removes the
+`shims install` first to wire PATH. `shims disable` removes the
 symlink only; re-enable later with `shims enable`.
 
-### 4.4b `skip` (bypass the shim for one command)
+### 4.4a `skip` (bypass the shim for one command)
 
 Forward a single tool invocation to the real binary, skipping the
 audit. Public, supported escape hatch for the day-to-day case where
@@ -1310,14 +1313,14 @@ GUARDEP_STRICT=1 npm install
 
 ## 14. Troubleshooting
 
-### `npm install` hangs or fails after install-shims
+### `npm install` hangs or fails after `shims install`
 
 The shim refuses to proceed when `--no-package-lock` is set or when
 no lockfile exists. Generate one first using the bypass:
 
 ```bash
 guardep skip npm install --package-lock-only
-guardep install-shims --force
+guardep shims install --force
 ```
 
 ### "registry returned 429"
@@ -1365,7 +1368,7 @@ for the full bypass reference.
 mv ~/.zshrc.guardep.bak ~/.zshrc   # before any guardep edit
 ```
 
-`uninstall-shims` strips the marker block exactly; backups are
+`shims uninstall` strips the marker block exactly; backups are
 left in place so you can revert further if needed.
 
 ---

@@ -1,7 +1,7 @@
 //! `guardep shims` — manage the package-manager shims after the
-//! initial `install-shims` run. Three actions: list, enable, disable.
+//! initial `shims install` run. Three actions: list, enable, disable.
 //!
-//! These commands deliberately leave PATH wiring alone. `install-shims`
+//! These commands deliberately leave PATH wiring alone. `shims install`
 //! is the entry point that edits shell rc files; `shims enable/disable`
 //! only flips symlinks under `~/.guardep/bin/`, so a user can adjust
 //! the gated tool set without re-running the wiring prompt.
@@ -29,7 +29,7 @@ pub fn list() -> Result<()> {
     if !exists {
         println!();
         println!(
-            "{} {} does not exist — run `guardep install-shims` first.",
+            "{} {} does not exist — run `guardep shims install` first.",
             "i".cyan(),
             dir.display()
         );
@@ -42,7 +42,7 @@ pub fn enable(tools: &[String]) -> Result<()> {
     let dir = shim_dir()?;
     if !dir.exists() {
         anyhow::bail!(
-            "{} does not exist — run `guardep install-shims` first to wire PATH, \
+            "{} does not exist — run `guardep shims install` first to wire PATH, \
              then `guardep shims enable` to add tools.",
             dir.display()
         );

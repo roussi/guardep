@@ -88,7 +88,7 @@ fn confirm_path_wiring(targets: &[RcTarget], assume_yes: bool) -> Result<bool> {
     }
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         // Non-interactive (CI, pipe). Default to yes — user opted into
-        // `install-shims` explicitly; refusing silently here would leave
+        // `shims install` explicitly; refusing silently here would leave
         // them with a half-installed gate.
         return Ok(true);
     }
@@ -99,7 +99,7 @@ fn confirm_path_wiring(targets: &[RcTarget], assume_yes: bool) -> Result<bool> {
     }
     println!(
         "Each file is backed up to `<file>.guardep.bak` before any change. \
-         Edits sit between marker comments so `guardep uninstall-shims` can \
+         Edits sit between marker comments so `guardep shims uninstall` can \
          remove them cleanly."
     );
     print!("Proceed? [Y/n] ");
@@ -198,7 +198,7 @@ pub fn select_tools(
     if !is_tty || assume_yes {
         // Non-interactive / -y: trust detection or fall back to all.
         // Falling back to `ALL_TOOLS` mirrors the prior behaviour for
-        // users running `guardep install-shims` globally outside any
+        // users running `guardep shims install` globally outside any
         // project directory.
         if detected.is_empty() {
             return Ok(ALL_TOOLS.to_vec());
@@ -491,13 +491,13 @@ fn render_snippet(kind: RcKind, shim_dir: &Path) -> String {
     let dir = shim_dir.display();
     match kind {
         RcKind::PosixShell => format!(
-            "{MARKER_BEGIN}\n# Added by `guardep install-shims`. Remove with `guardep uninstall-shims`.\ncase \":$PATH:\" in\n  *\":{dir}:\"*) ;;\n  *) export PATH=\"{dir}:$PATH\" ;;\nesac\n{MARKER_END}\n"
+            "{MARKER_BEGIN}\n# Added by `guardep shims install`. Remove with `guardep shims uninstall`.\ncase \":$PATH:\" in\n  *\":{dir}:\"*) ;;\n  *) export PATH=\"{dir}:$PATH\" ;;\nesac\n{MARKER_END}\n"
         ),
         RcKind::Fish => format!(
-            "{MARKER_BEGIN}\n# Added by `guardep install-shims`. Remove with `guardep uninstall-shims`.\nif not contains \"{dir}\" $PATH\n    set -gx PATH \"{dir}\" $PATH\nend\n{MARKER_END}\n"
+            "{MARKER_BEGIN}\n# Added by `guardep shims install`. Remove with `guardep shims uninstall`.\nif not contains \"{dir}\" $PATH\n    set -gx PATH \"{dir}\" $PATH\nend\n{MARKER_END}\n"
         ),
         RcKind::PowerShell => format!(
-            "{MARKER_BEGIN_PS}\n# Added by `guardep install-shims`. Remove with `guardep uninstall-shims`.\n$guardepBin = \"{dir}\"\nif (-not (($env:PATH -split [IO.Path]::PathSeparator) -contains $guardepBin)) {{\n    $env:PATH = \"$guardepBin$([IO.Path]::PathSeparator)$env:PATH\"\n}}\n{MARKER_END_PS}\n"
+            "{MARKER_BEGIN_PS}\n# Added by `guardep shims install`. Remove with `guardep shims uninstall`.\n$guardepBin = \"{dir}\"\nif (-not (($env:PATH -split [IO.Path]::PathSeparator) -contains $guardepBin)) {{\n    $env:PATH = \"$guardepBin$([IO.Path]::PathSeparator)$env:PATH\"\n}}\n{MARKER_END_PS}\n"
         ),
     }
 }

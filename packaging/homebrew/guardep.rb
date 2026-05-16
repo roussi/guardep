@@ -54,10 +54,10 @@ class Guardep < Formula
     <<~EOS
       To enforce the package-manager firewall locally:
 
-        guardep install-shims
+        guardep shims install
 
-      This wires npm/pnpm/yarn/mvn through guardep via PATH shims placed in
-      ~/.guardep/bin. Reverse with `guardep uninstall-shims`.
+      This wires npm/pnpm/yarn/mvn/cargo through guardep via PATH shims placed in
+      ~/.guardep/bin. Reverse with `guardep shims uninstall`.
     EOS
   end
 
