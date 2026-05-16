@@ -1298,6 +1298,7 @@ dependencies = [
  "serde_json",
  "similar",
  "supports-color 3.0.2",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",

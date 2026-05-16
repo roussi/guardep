@@ -50,7 +50,16 @@ brew tap roussi/tap && brew install guardep
 guardep audit --path ~/code/my-frontend
 
 # Wire npm/pnpm/yarn/mvn/cargo through guardep system-wide (asks first; reversible)
+# Interactive: pre-checks tools matching lockfiles found in cwd.
 guardep install-shims
+
+# Or explicit allowlist (skips the prompt):
+guardep install-shims --tools npm,cargo
+
+# Adjust later without re-running install:
+guardep shims list
+guardep shims enable cargo
+guardep shims disable mvn
 
 # Now package-manager commands are gated:
 cd ~/code/my-frontend
@@ -229,17 +238,28 @@ then use the `--git` form above.
 
 `guardep install-shims` does two things:
 
-1. Symlinks `~/.guardep/bin/{npm,pnpm,yarn,mvn,cargo}` to the guardep binary.
+1. Symlinks `~/.guardep/bin/<tool>` for each selected tool, pointing at the guardep binary.
 2. Prepends `~/.guardep/bin` to `PATH` in `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.config/fish/config.fish` (Unix) or `$PROFILE` (Windows PowerShell).
 
-Each rc file is backed up to `<file>.guardep.bak` before the first edit. Changes sit between `# >>> guardep-shim >>>` / `# <<< guardep-shim <<<` marker comments so removal is exact. On a tty the command asks before editing; in CI / piped input it proceeds.
+By default the command inspects the cwd for known lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `pom.xml`, `Cargo.lock`) and pre-checks the matching shims. In a TTY it asks for confirmation; in CI / piped input it uses the detected set silently, falling back to every tool when no lockfile is present.
+
+Each rc file is backed up to `<file>.guardep.bak` before the first edit. Changes sit between `# >>> guardep-shim >>>` / `# <<< guardep-shim <<<` marker comments so removal is exact.
 
 Flags:
+- `--tools npm,cargo` - explicit allowlist (bypasses the prompt). Use `all` for every supported tool.
 - `--no-wire-path` - symlinks only, edit PATH yourself.
-- `--yes` / `-y` - skip the interactive prompt.
+- `--yes` / `-y` - skip the interactive prompt; accept detected defaults.
 - `--force` - overwrite existing symlinks and re-inject the rc block.
 
-Reverse with `guardep uninstall-shims`: strips the symlinks and the marker block from every rc file. Backups stay in place.
+Manage which shims are active after install without re-running the PATH wiring step:
+
+```bash
+guardep shims list                 # show active vs disabled
+guardep shims enable cargo         # start gating cargo
+guardep shims disable mvn yarn     # stop gating Maven and Yarn
+```
+
+Reverse everything with `guardep uninstall-shims`: strips the symlinks and the marker block from every rc file. Backups stay in place.
 
 ## Usage
 

@@ -4,7 +4,18 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const TOOLS: &[&str] = &["npm", "pnpm", "yarn", "mvn", "cargo"];
+pub const ALL_TOOLS: &[&str] = &["npm", "pnpm", "yarn", "mvn", "cargo"];
+
+/// Map (lockfile / manifest filename in cwd) → tool whose shim is
+/// useful. Order mirrors `ALL_TOOLS` so detect_project_tools yields
+/// stable output across runs.
+const LOCKFILE_TO_TOOL: &[(&str, &str)] = &[
+    ("package-lock.json", "npm"),
+    ("pnpm-lock.yaml", "pnpm"),
+    ("yarn.lock", "yarn"),
+    ("pom.xml", "mvn"),
+    ("Cargo.lock", "cargo"),
+];
 
 const MARKER_BEGIN: &str = "# >>> guardep-shim >>>";
 const MARKER_END: &str = "# <<< guardep-shim <<<";
@@ -19,25 +30,28 @@ pub fn shim_dir() -> Result<PathBuf> {
     Ok(home.join(".guardep").join("bin"))
 }
 
-pub fn run(force: bool, wire_path: bool, assume_yes: bool) -> Result<()> {
+pub fn run(
+    force: bool,
+    wire_path: bool,
+    assume_yes: bool,
+    requested_tools: Option<Vec<String>>,
+) -> Result<()> {
     let dir = shim_dir()?;
     fs::create_dir_all(&dir).context("create shim dir")?;
     let exe = std::env::current_exe()?;
 
-    for tool in TOOLS {
-        let link = dir.join(tool);
-        if link.exists() {
-            if !force {
-                eprintln!(
-                    "{} {tool} already linked — use --force to overwrite",
-                    "•".dimmed()
-                );
-                continue;
-            }
-            fs::remove_file(&link)?;
-        }
-        symlink(&exe, &link)?;
-        println!("{} {tool} → {}", "✓".green(), exe.display());
+    let cwd = std::env::current_dir()?;
+    let detected = detect_project_tools(&cwd);
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let selected = select_tools(requested_tools, &detected, assume_yes, is_tty)?;
+
+    if selected.is_empty() {
+        eprintln!("{} no tools selected — nothing to install.", "i".cyan());
+        return Ok(());
+    }
+
+    for tool in &selected {
+        ensure_shim(&dir, tool, &exe, force)?;
     }
 
     if !wire_path {
@@ -100,7 +114,7 @@ pub fn uninstall(force: bool) -> Result<()> {
     let dir = shim_dir()?;
 
     if dir.exists() {
-        for tool in TOOLS {
+        for tool in ALL_TOOLS {
             let link = dir.join(tool);
             if link.exists() {
                 fs::remove_file(&link).with_context(|| format!("remove {}", link.display()))?;
@@ -131,6 +145,149 @@ fn symlink(src: &Path, dst: &Path) -> Result<()> {
 fn symlink(src: &Path, dst: &Path) -> Result<()> {
     std::os::windows::fs::symlink_file(src, dst)?;
     Ok(())
+}
+
+// ── Tool selection ───────────────────────────────────────────────────────
+
+/// Create or refresh the symlink for `tool` in `dir`. Idempotent.
+pub(crate) fn ensure_shim(dir: &Path, tool: &str, exe: &Path, force: bool) -> Result<()> {
+    let link = dir.join(tool);
+    if link.exists() {
+        if !force {
+            eprintln!(
+                "{} {tool} already linked — use --force to overwrite",
+                "•".dimmed()
+            );
+            return Ok(());
+        }
+        fs::remove_file(&link)?;
+    }
+    symlink(exe, &link)?;
+    println!("{} {tool} → {}", "✓".green(), exe.display());
+    Ok(())
+}
+
+/// Walk `cwd` for known lockfile/manifest names and return the
+/// matching tools in `ALL_TOOLS` order. No recursion — only the
+/// immediate cwd, since shim install is a one-time setup decision,
+/// not a build-time scan.
+pub fn detect_project_tools(cwd: &Path) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for (file, tool) in LOCKFILE_TO_TOOL {
+        if cwd.join(file).exists() && !out.contains(tool) {
+            out.push(*tool);
+        }
+    }
+    out
+}
+
+/// Decide which tools to wire based on (a) explicit `--tools`, (b)
+/// detected lockfiles in cwd, (c) interactive prompt, and (d) whether
+/// we're attached to a TTY. CI / piped invocations preserve the v0
+/// behaviour: install every tool when no flag is given.
+pub fn select_tools(
+    requested: Option<Vec<String>>,
+    detected: &[&'static str],
+    assume_yes: bool,
+    is_tty: bool,
+) -> Result<Vec<&'static str>> {
+    if let Some(list) = requested {
+        return resolve_requested(&list);
+    }
+
+    if !is_tty || assume_yes {
+        // Non-interactive / -y: trust detection or fall back to all.
+        // Falling back to `ALL_TOOLS` mirrors the prior behaviour for
+        // users running `guardep install-shims` globally outside any
+        // project directory.
+        if detected.is_empty() {
+            return Ok(ALL_TOOLS.to_vec());
+        }
+        return Ok(detected.to_vec());
+    }
+
+    interactive_pick(detected)
+}
+
+fn resolve_requested(list: &[String]) -> Result<Vec<&'static str>> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for raw in list {
+        let name = raw.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if name.eq_ignore_ascii_case("all") {
+            return Ok(ALL_TOOLS.to_vec());
+        }
+        let known = ALL_TOOLS
+            .iter()
+            .find(|t| t.eq_ignore_ascii_case(name))
+            .copied();
+        match known {
+            Some(t) if !out.contains(&t) => out.push(t),
+            Some(_) => {}
+            None => anyhow::bail!(
+                "unknown tool `{name}` (expected one of: {})",
+                ALL_TOOLS.join(", ")
+            ),
+        }
+    }
+    Ok(out)
+}
+
+fn interactive_pick(detected: &[&'static str]) -> Result<Vec<&'static str>> {
+    println!();
+    if detected.is_empty() {
+        println!("No lockfiles detected in cwd — defaulting to all tools.");
+    } else {
+        println!("Detected in cwd: {}", detected.join(", "));
+    }
+    println!();
+    println!("Tools that can be gated:");
+    for tool in ALL_TOOLS {
+        let mark = if detected.contains(tool) { "x" } else { " " };
+        println!("  [{mark}] {tool}");
+    }
+    println!();
+    print!("Accept selection? [Y/n/edit] ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let mut answer = String::new();
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut answer)?;
+    let trimmed = answer.trim().to_ascii_lowercase();
+    match trimmed.as_str() {
+        "" | "y" | "yes" => {
+            if detected.is_empty() {
+                Ok(ALL_TOOLS.to_vec())
+            } else {
+                Ok(detected.to_vec())
+            }
+        }
+        "n" | "no" => Ok(vec![]),
+        "e" | "edit" => prompt_custom_list(),
+        // Any other input is treated as a comma list to keep one-shot
+        // selection ergonomic (`npm,cargo` + Enter just works).
+        _ => resolve_requested(
+            &answer
+                .trim()
+                .split(',')
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+        ),
+    }
+}
+
+fn prompt_custom_list() -> Result<Vec<&'static str>> {
+    print!("Enter comma-separated tools to enable (e.g. npm,cargo): ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let mut answer = String::new();
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut answer)?;
+    let list: Vec<String> = answer
+        .trim()
+        .split(',')
+        .map(|s| s.to_string())
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    resolve_requested(&list)
 }
 
 // ── PATH wiring ──────────────────────────────────────────────────────────
@@ -403,5 +560,71 @@ mod tests {
         assert!(snippet.contains("$env:PATH"));
         assert!(snippet.contains(MARKER_BEGIN_PS));
         assert!(snippet.contains(MARKER_END_PS));
+    }
+
+    fn touch(dir: &Path, name: &str) {
+        fs::write(dir.join(name), b"").unwrap();
+    }
+
+    #[test]
+    fn detect_returns_empty_for_blank_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert_eq!(detect_project_tools(dir.path()), Vec::<&'static str>::new());
+    }
+
+    #[test]
+    fn detect_finds_npm_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        touch(dir.path(), "package-lock.json");
+        assert_eq!(detect_project_tools(dir.path()), vec!["npm"]);
+    }
+
+    #[test]
+    fn detect_finds_npm_and_cargo_in_stable_order() {
+        let dir = tempfile::TempDir::new().unwrap();
+        touch(dir.path(), "Cargo.lock");
+        touch(dir.path(), "package-lock.json");
+        // npm comes first because LOCKFILE_TO_TOOL lists it first.
+        assert_eq!(detect_project_tools(dir.path()), vec!["npm", "cargo"]);
+    }
+
+    #[test]
+    fn select_with_explicit_list_returns_those() {
+        let got = select_tools(Some(vec!["npm".into(), "cargo".into()]), &[], false, true).unwrap();
+        assert_eq!(got, vec!["npm", "cargo"]);
+    }
+
+    #[test]
+    fn select_with_all_keyword_returns_all_tools() {
+        let got = select_tools(Some(vec!["all".into()]), &[], false, true).unwrap();
+        assert_eq!(got, ALL_TOOLS.to_vec());
+    }
+
+    #[test]
+    fn select_rejects_unknown_tool() {
+        let err = select_tools(Some(vec!["bogus".into()]), &[], false, true).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("bogus"),
+            "msg should mention offending tool: {msg}"
+        );
+    }
+
+    #[test]
+    fn select_non_tty_no_detection_returns_all_tools() {
+        let got = select_tools(None, &[], false, false).unwrap();
+        assert_eq!(got, ALL_TOOLS.to_vec());
+    }
+
+    #[test]
+    fn select_non_tty_with_detection_returns_detected() {
+        let got = select_tools(None, &["npm", "cargo"], false, false).unwrap();
+        assert_eq!(got, vec!["npm", "cargo"]);
+    }
+
+    #[test]
+    fn select_assume_yes_uses_detection_even_on_tty() {
+        let got = select_tools(None, &["mvn"], true, true).unwrap();
+        assert_eq!(got, vec!["mvn"]);
     }
 }

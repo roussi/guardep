@@ -38,3 +38,6 @@ indicatif.workspace = true
 supports-color.workspace = true
 similar.workspace = true
 chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
