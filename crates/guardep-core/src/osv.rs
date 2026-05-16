@@ -149,12 +149,12 @@ struct OsvVulnStub {
 }
 
 #[derive(Deserialize)]
-struct OsvVuln {
-    id: String,
+pub(crate) struct OsvVuln {
+    pub(crate) id: String,
     #[serde(default)]
-    aliases: Vec<String>,
+    pub(crate) aliases: Vec<String>,
     #[serde(default)]
-    summary: String,
+    pub(crate) summary: String,
     #[serde(default)]
     affected: Vec<OsvAffected>,
     #[serde(default)]
@@ -201,7 +201,7 @@ struct OsvReference {
     url: String,
 }
 
-fn convert(v: OsvVuln, ecosystem: Ecosystem, package: &str) -> Advisory {
+pub(crate) fn convert(v: OsvVuln, ecosystem: Ecosystem, package: &str) -> Advisory {
     let ranges: Vec<AffectedRange> = v
         .affected
         .iter()
