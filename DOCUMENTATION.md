@@ -256,8 +256,14 @@ is present).
 
 The Maven shim only intercepts the dependency-resolving lifecycle
 phases (`install`, `package`, `verify`); other goals like `compile`
-or `test` pass through unchanged. The Cargo shim gates `build`,
-`check`, `test`, `run`, `doc`, `bench`, `fetch`, and `clippy`.
+or `test` pass through unchanged. The Cargo shim gates two sets of
+subcommands: post-lock build commands (`build`, `check`, `test`,
+`run`, `doc`, `bench`, `fetch`, `clippy`) audit the existing
+`Cargo.lock`; lock-mutating commands (`add`, `install`, `update`)
+audit the future graph via a temp-dir cargo invocation before the
+real lock is touched. Off-registry deps (`--path` / `--git` /
+`--registry`) are forwarded with a stderr warning since OSV has no
+keys for those sources.
 
 ```bash
 guardep install-shims                       # interactive in a TTY
@@ -282,7 +288,10 @@ npm install      # audited; blocks if malware/critical
 pnpm install     # audited
 yarn install     # audited
 mvn install      # audited
-cargo build      # audited
+cargo build      # audited (post-lock)
+cargo add serde  # audited (pre-install; uses temp-dir dry-run)
+cargo install rg # audited (pre-install; fresh probe workspace)
+cargo update     # audited (pre-install; post-update graph)
 ```
 
 To change which shims are active after install without re-running
@@ -601,8 +610,11 @@ Maven shim only intercepts the resolution-triggering phases
 (`install`, `package`, `verify`); other goals (`compile`, `test`,
 `clean`) pass through unchanged so audit cost stays bounded.
 Cargo shim intercepts commands that resolve, build, or run the locked
-dependency graph; lock-mutating and global install commands are
-forwarded unchanged for now.
+dependency graph, plus the three lock-mutating commands (`add`,
+`install`, `update`) — those use a temp-dir dry-run resolver so the
+audit runs **before** `Cargo.lock` is touched. Off-registry sources
+(`--path` / `--git` / `--registry`) are forwarded with a stderr
+warning rather than audited (OSV has no keys for them).
 
 ### 4.5 Cargo coverage (honest scope)
 
@@ -615,7 +627,8 @@ intentionally don't run on Cargo packages.
 | `Cargo.lock` v3/v4 parsing | works | Filters to `registry+https://github.com/rust-lang/crates.io-index` and the sparse equivalents. Git, path, and workspace-member entries are skipped. |
 | OSV.dev advisory matching | works | OSV aggregates **GHSA + RustSec + others**, so coverage is a strict superset of any RustSec-only tool. Semver matching reuses the npm-side range engine. |
 | EPSS + CISA KEV enrichment | works | Ecosystem-agnostic; every Cargo CVE is annotated with EPSS percentile and a KEV badge when applicable. |
-| Cargo shim | works | Intercepts `build`, `check`, `test`, `fetch`, `run`, `bench`, `clippy`, `doc`. Audits the resolved `Cargo.lock` graph **before** `build.rs` executes. Honors `GUARDEP_STRICT=1` and `GUARDEP_BYPASS=1`. |
+| Cargo shim (post-lock) | works | Intercepts `build`, `check`, `test`, `fetch`, `run`, `bench`, `clippy`, `doc`. Audits the resolved `Cargo.lock` graph **before** `build.rs` executes. Honors `GUARDEP_STRICT=1` and `GUARDEP_BYPASS=1`. |
+| Cargo shim (pre-install) | works | Intercepts `add`, `install`, `update`. Resolves the future graph in a temp-dir cargo invocation (copy of `Cargo.toml` + lock for `add`/`update`, fresh `cargo new --bin` probe for `install`), parses the resulting `Cargo.lock`, and audits **before** the user's lock mutates. Off-registry deps (`--path` / `--git` / `--registry`) are forwarded with a stderr warning, since OSV has no advisory keys for those sources. |
 | CycloneDX / SARIF export | works | Same code path as npm. |
 | Risk scoring from crates.io registry | **not implemented** | Equivalent of the npm-registry evaluator (maintainer count, version count, fresh-publish, abandonment, typosquat) doesn't run on Cargo packages. crates.io has the data; the evaluator is hard-gated to `Ecosystem::Npm`. |
 | `build.rs` static analysis | **not implemented** | Cargo equivalent of postinstall AST. No scanner yet. |
@@ -623,8 +636,7 @@ intentionally don't run on Cargo packages.
 | Rust source-behavior scanning | **not implemented** | Current scanner uses `swc_ecma_parser` (JS AST). A Rust scanner is not on the roadmap. |
 | Cargo.toml license field | **not implemented** | License evaluator is npm-only. `[package].license` is standard but unparsed. |
 | `yanked` crate detection | **not implemented** | crates.io has the `yanked` flag (the deprecation equivalent); not currently consumed. |
-| Pre-update dry-run | **not implemented** | npm-style temp-dir resolution exists only for npm; `cargo add` / `cargo update` aren't pre-audited. |
-| Shim coverage of lock-mutating commands | **not implemented** | `cargo add`, `cargo update`, `cargo install` are forwarded unchanged. Audit triggers on the next build-side command. |
+| Pre-install dry-run | works | Temp-dir cargo invocation resolves the future graph for `add`, `install`, `update` before the real `Cargo.lock` is touched. See the **Cargo shim (pre-install)** row above for the strategy per subcommand. |
 
 **Use it for:** CVE-driven blocking on the resolved graph,
 build-time enforcement before `build.rs`, EPSS/KEV signal on

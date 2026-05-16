@@ -121,6 +121,7 @@ support. What ships today:
 | Semver range matching for Cargo ranges | works |
 | EPSS percentile + CISA KEV enrichment on Cargo CVEs | works |
 | Shim for `cargo build`/`check`/`test`/`fetch`/`run`/`bench`/`clippy`/`doc` | works |
+| Pre-install shim for `cargo add`/`install`/`update` (temp-dir dry-run) | works |
 | CycloneDX 1.5 SBOM + SARIF 2.1.0 export for Cargo findings | works |
 | Risk-score reasons (fresh-publish, single-maintainer, etc.) from crates.io | **not implemented** |
 | `build.rs` static analysis (Cargo equivalent of postinstall AST) | **not implemented** |
@@ -128,8 +129,7 @@ support. What ships today:
 | Rust source-behavior scanning (current scanner is JS AST only) | **not implemented** |
 | Cargo.toml license field parsing + deny-list | **not implemented** (npm-only today) |
 | `yanked` crate detection (crates.io equivalent of npm `deprecated`) | **not implemented** |
-| Dry-run pre-audit for `cargo add` / `cargo update` (npm-style temp-dir resolve) | **not implemented** |
-| Cargo shim for lock-mutating commands (`add`, `update`, `install`) | **not implemented** (forwarded unchanged) |
+| Dry-run pre-audit for `cargo add` / `cargo update` / `cargo install` (temp-dir resolve) | works (off-registry `--path` / `--git` deps skipped with stderr warning) |
 
 Cargo support is **advisory parity, not feature parity** with npm.
 If your Rust threat model is mostly known CVEs in transitive
@@ -292,6 +292,9 @@ pnpm install     # audited
 yarn install     # audited
 mvn install      # audited; mvn package and verify also intercepted
 cargo build      # audited; cargo check/test/fetch also intercepted
+cargo add serde  # pre-install audit before Cargo.lock mutates
+cargo install rg # fresh-workspace dry-run audit before the binary is built
+cargo update     # post-update graph audited before the lock is rewritten
 ```
 
 Bypass for one command (calls the real binary directly, skips

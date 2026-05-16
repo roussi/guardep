@@ -368,24 +368,27 @@ impl Resolver for CargoLockResolver {
         if !lock_path.exists() {
             anyhow::bail!("Cargo.lock not found in {}", project_root.display());
         }
-
-        let raw = std::fs::read_to_string(&lock_path).context("read Cargo.lock")?;
-        let lock: CargoLock = toml::from_str(&raw).context("parse Cargo.lock")?;
-        let mut out: BTreeSet<PackageRef> = BTreeSet::new();
-
-        for package in lock.package {
-            if !is_crates_io_source(package.source.as_deref()) {
-                continue;
-            }
-            out.insert(PackageRef::new(
-                Ecosystem::Cargo,
-                package.name,
-                package.version,
-            ));
-        }
-
-        Ok(out.into_iter().collect())
+        parse_cargo_lock_file(&lock_path)
     }
+}
+
+// Shared by `CargoLockResolver` and `CargoDryRunResolver`. Kept private
+// because callers should pick a resolver, not poke at the parser directly.
+fn parse_cargo_lock_file(lock_path: &Path) -> Result<Vec<PackageRef>> {
+    let raw = std::fs::read_to_string(lock_path).context("read Cargo.lock")?;
+    let lock: CargoLock = toml::from_str(&raw).context("parse Cargo.lock")?;
+    let mut out: BTreeSet<PackageRef> = BTreeSet::new();
+    for package in lock.package {
+        if !is_crates_io_source(package.source.as_deref()) {
+            continue;
+        }
+        out.insert(PackageRef::new(
+            Ecosystem::Cargo,
+            package.name,
+            package.version,
+        ));
+    }
+    Ok(out.into_iter().collect())
 }
 
 fn is_crates_io_source(source: Option<&str>) -> bool {
@@ -713,6 +716,52 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         let msg = format!("{err}");
         assert!(msg.contains("no supported manifest"));
     }
+
+    #[test]
+    fn forward_cargo_args_strips_leading_subcommand() {
+        let v: Vec<String> = ["add", "serde", "--features", "derive"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let out = super::forward_cargo_args(&v, "add");
+        assert_eq!(out, vec!["serde", "--features", "derive"]);
+    }
+
+    #[test]
+    fn forward_cargo_args_strips_dry_run_and_locked_for_update() {
+        // `--dry-run` would suppress the lockfile write we need; `--locked`
+        // would refuse to update the seeded temp lock.
+        let v: Vec<String> = ["update", "-p", "serde", "--dry-run", "--locked"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let out = super::forward_cargo_args(&v, "update");
+        assert_eq!(out, vec!["-p", "serde"]);
+    }
+
+    #[test]
+    fn forward_cargo_args_keeps_unrelated_flags() {
+        let v: Vec<String> = ["install", "ripgrep", "--features", "pcre2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let out = super::forward_cargo_args(&v, "install");
+        assert_eq!(out, vec!["ripgrep", "--features", "pcre2"]);
+    }
+
+    #[test]
+    fn cargo_dry_run_add_requires_cargo_toml() {
+        // No Cargo.toml in the temp dir → resolver fails fast before
+        // shelling out. Exercises the Add/Update precondition without
+        // touching the network.
+        let dir = TempDir::new().unwrap();
+        let resolver = CargoDryRunResolver::new(
+            CargoDryRunAction::Add,
+            vec!["add".to_string(), "serde".to_string()],
+        );
+        let err = resolver.resolve(dir.path()).unwrap_err();
+        assert!(format!("{err}").contains("Cargo.toml not found"));
+    }
 }
 
 // ── Maven dependency-tree resolver ──────────────────────────────────────
@@ -1035,4 +1084,196 @@ impl Resolver for NpmDryRunResolver {
         }
         Ok(pkgs)
     }
+}
+
+// ── Cargo dry-run resolver ──────────────────────────────────────────────
+//
+// Resolves the Cargo dependency graph that `cargo add` / `cargo install` /
+// `cargo update` would produce, without mutating the user's workspace.
+//
+// Strategy varies by subcommand:
+//
+//   Add     copy Cargo.toml (+ Cargo.lock if present) into a temp dir,
+//           run `cargo add` there. cargo updates the temp lock; we parse
+//           it. `cargo add --dry-run` exists but does NOT resolve the
+//           transitive closure into the lockfile, so we run for real
+//           against a throwaway workspace.
+//   Install create a fresh `cargo new --bin` probe workspace, then run
+//           `cargo add <crate>[@<ver>]` against it. Same parser.
+//   Update  copy Cargo.toml + Cargo.lock into temp dir, run
+//           `cargo update` with the user's package selection forwarded
+//           but `--dry-run` stripped (cargo's --dry-run refuses to write
+//           the lock). The temp lock captures the post-update graph.
+//
+// All three forms forward unrecognised user args verbatim, scrub the
+// shim from PATH (no shim re-entry), and bail with a parse error rather
+// than silently returning an empty graph.
+
+pub enum CargoDryRunAction {
+    Add,
+    Install,
+    Update,
+}
+
+pub struct CargoDryRunResolver {
+    action: CargoDryRunAction,
+    args: Vec<String>,
+}
+
+impl CargoDryRunResolver {
+    pub fn new(action: CargoDryRunAction, args: Vec<String>) -> Self {
+        Self { action, args }
+    }
+}
+
+impl Resolver for CargoDryRunResolver {
+    fn resolve(&self, project_root: &Path) -> Result<Vec<PackageRef>> {
+        let workdir = tempfile::tempdir().context("create temp dir for cargo dry-run")?;
+        let probe_root = match self.action {
+            CargoDryRunAction::Add | CargoDryRunAction::Update => {
+                let manifest = project_root.join("Cargo.toml");
+                if !manifest.exists() {
+                    anyhow::bail!("Cargo.toml not found in {}", project_root.display());
+                }
+                std::fs::copy(&manifest, workdir.path().join("Cargo.toml"))
+                    .context("copy Cargo.toml into temp dir")?;
+                let lock = project_root.join("Cargo.lock");
+                if lock.exists() {
+                    std::fs::copy(&lock, workdir.path().join("Cargo.lock"))
+                        .context("seed temp dir with existing Cargo.lock")?;
+                }
+                // `cargo add` resolves dev-deps from `[lib]` / `[bin]`
+                // entries in the manifest if they reference paths under
+                // `src/`. We don't copy src/, so write a minimal lib.rs
+                // placeholder so cargo doesn't error out on a missing
+                // crate root. The placeholder is enough for resolution.
+                let src = workdir.path().join("src");
+                std::fs::create_dir_all(&src).context("create src/ in temp dir")?;
+                std::fs::write(src.join("lib.rs"), "")
+                    .context("write placeholder src/lib.rs in temp dir")?;
+                workdir.path().to_path_buf()
+            }
+            CargoDryRunAction::Install => {
+                let probe = workdir.path().join("probe");
+                let status = Command::new(locate_real_cargo()?)
+                    .arg("new")
+                    .arg("--bin")
+                    .arg("--quiet")
+                    .arg("--name")
+                    .arg("guardep-install-probe")
+                    .arg(&probe)
+                    .env("PATH", scrub_shim_from_path())
+                    .status()
+                    .context("invoke `cargo new` for install probe")?;
+                if !status.success() {
+                    anyhow::bail!("`cargo new` exited {}", status);
+                }
+                probe
+            }
+        };
+
+        let spinner = indicatif::ProgressBar::new_spinner();
+        spinner.set_style(
+            indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner()),
+        );
+        spinner.set_message("resolving cargo dependencies…");
+        spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
+        let mut cmd = Command::new(locate_real_cargo()?);
+        match self.action {
+            CargoDryRunAction::Add => {
+                cmd.arg("add");
+                cmd.args(forward_cargo_args(&self.args, "add"));
+            }
+            CargoDryRunAction::Install => {
+                // Install spec(s) become `cargo add` args inside the probe.
+                cmd.arg("add");
+                cmd.args(forward_cargo_args(&self.args, "install"));
+            }
+            CargoDryRunAction::Update => {
+                cmd.arg("update");
+                cmd.args(forward_cargo_args(&self.args, "update"));
+            }
+        }
+        cmd.current_dir(&probe_root)
+            .env("PATH", scrub_shim_from_path());
+
+        let output = cmd
+            .output()
+            .context("invoke real cargo for dry-run resolution");
+        spinner.finish_and_clear();
+        let output = output?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "cargo dry-run exited {}: {}",
+                output.status.code().unwrap_or(-1),
+                stderr.trim()
+            );
+        }
+
+        let temp_lock = probe_root.join("Cargo.lock");
+        if !temp_lock.exists() {
+            anyhow::bail!(
+                "cargo dry-run did not produce a lockfile at {}",
+                temp_lock.display()
+            );
+        }
+
+        let pkgs = parse_cargo_lock_file(&temp_lock)?;
+        if pkgs.is_empty() {
+            // Empty lockfile after `cargo add foo` means the new dep had
+            // no crates.io sources at all (path/git only). Surface rather
+            // than silently passing audit.
+            anyhow::bail!("cargo dry-run produced no crates.io packages");
+        }
+        Ok(pkgs)
+    }
+}
+
+/// Drop the leading subcommand and any args incompatible with our temp
+/// invocation. We strip `--dry-run` from `update` (cargo's --dry-run
+/// refuses to write the lock we need to parse) and `--locked` /
+/// `--frozen` everywhere (they pin a lockfile we may have just seeded
+/// with a stale copy).
+fn forward_cargo_args(args: &[String], leading_subcommand: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut skipped_leading = false;
+    for arg in args {
+        if !skipped_leading && arg == leading_subcommand {
+            skipped_leading = true;
+            continue;
+        }
+        if arg == "--dry-run" || arg == "-n" {
+            continue;
+        }
+        if arg == "--locked" || arg == "--frozen" {
+            continue;
+        }
+        out.push(arg.clone());
+    }
+    out
+}
+
+/// Resolve the real `cargo` binary, skipping `~/.guardep/bin` so we
+/// don't re-enter our own shim. Mirror of the locate logic in the CLI's
+/// shim module, kept here so `guardep-core` doesn't depend on CLI code.
+fn locate_real_cargo() -> Result<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    let mut shim_dir = std::path::PathBuf::from(&home);
+    shim_dir.push(".guardep");
+    shim_dir.push("bin");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path) {
+        if dir == shim_dir {
+            continue;
+        }
+        let candidate = dir.join("cargo");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!("could not locate real `cargo` on PATH (excluding shim dir)")
 }

@@ -261,6 +261,10 @@ enum Cmd {
         args: Vec<String>,
     },
     /// Run as the underlying tool's shim (auto-dispatched via argv0).
+    /// For `cargo` the shim audits both the post-lock graph
+    /// (`build/check/test/run/...`) and the future graph for the
+    /// lock-mutating commands (`add/install/update`) via a temp-dir
+    /// dry-run resolver.
     Shim {
         /// Tool name (npm, mvn, cargo, gradle). Required when invoked directly.
         tool: String,
