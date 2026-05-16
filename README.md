@@ -108,20 +108,16 @@ brew tap roussi/tap        # NOT `roussi/guardep`; tap repo is `homebrew-tap`
 brew install guardep
 ```
 
-### macOS Intel — Homebrew via Rosetta 2
-
-The native `x86_64-apple-darwin` binary is deferred to a later
-release because GitHub-hosted Intel macOS runners are deprecated.
-Until then the arm64 binary runs transparently under Rosetta 2
-(macOS 13+ ships Rosetta; guardep is pure Rust with no
-arch-specific syscalls).
+### macOS Intel — Homebrew
 
 ```bash
-arch -arm64 brew tap roussi/tap
-arch -arm64 brew install --formula guardep
+brew tap roussi/tap
+brew install guardep
 ```
 
-If you'd rather skip Rosetta, use the [build-from-source](#any-platform--build-from-source) path below.
+Same command as Apple Silicon. The Intel binary is cross-compiled
+from the arm64 macOS runner so we don't depend on the deprecated
+Intel macOS runner queue.
 
 ### Linux x86_64 / Linux arm64 — Homebrew
 

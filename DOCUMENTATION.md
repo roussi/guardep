@@ -126,7 +126,7 @@ Pick the path for your platform. Every release builds:
 | Linux x86_64 | `guardep-<ver>-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux arm64 | `guardep-<ver>-aarch64-unknown-linux-gnu.tar.gz` |
 | macOS arm64 (M-series) | `guardep-<ver>-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | not built natively for v0.1.0 (use Rosetta 2 — see §3.2) |
+| macOS Intel | `guardep-<ver>-x86_64-apple-darwin.tar.gz` (cross-compiled from arm64 runner) |
 | Windows x86_64 | `guardep-<ver>-x86_64-pc-windows-msvc.zip` |
 
 Each asset has a sibling `.sha256` file for verification.
@@ -142,19 +142,17 @@ The tap (`roussi/homebrew-tap`) is auto-published by the
 `publish-homebrew` job in `.github/workflows/release.yml` on every
 stable `vX.Y.Z` tag.
 
-### 3.2 macOS Intel — Homebrew via Rosetta 2
-
-Native `x86_64-apple-darwin` is deferred to a later release because
-GitHub-hosted Intel macOS runners are deprecated and the queue
-stalls for hours. macOS 13+ ships Rosetta 2; guardep is pure Rust
-with no arch-specific syscalls so it runs cleanly under Rosetta.
+### 3.2 macOS Intel — Homebrew
 
 ```bash
-arch -arm64 brew tap roussi/tap
-arch -arm64 brew install --formula guardep
+brew tap roussi/tap
+brew install guardep
 ```
 
-If you'd rather skip Rosetta, see [§3.5](#35-any-platform--build-from-source).
+Same command as Apple Silicon. The native Intel binary is
+cross-compiled from the arm64 macOS runner via
+`rustup target add x86_64-apple-darwin`, so the release pipeline
+doesn't depend on the deprecated `macos-13` runner queue.
 
 ### 3.3 Linux x86_64 / arm64
 

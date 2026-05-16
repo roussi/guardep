@@ -25,13 +25,15 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             cross: true
-          # x86_64-apple-darwin (Intel macOS) intentionally absent for
-          # v0.1.0: GitHub-hosted `macos-13` runners are deprecated and
-          # the queue routinely stalls for hours. Re-add once a stable
-          # alternative is available (paid `macos-13-large`,
-          # `macos-15-intel`, or self-hosted). Apple Silicon coverage
-          # below is the documented minimum for the first release.
+          # macOS arm64 builds natively on macos-latest (an arm64
+          # runner). macOS x86_64 cross-compiles from the same arm64
+          # runner via `rustup target add x86_64-apple-darwin`,
+          # avoiding the deprecated/queue-stalled macos-13 Intel
+          # runner entirely.
           - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
             os: macos-latest
             archive: tar.gz
           - target: x86_64-pc-windows-msvc
@@ -138,18 +140,11 @@ jobs:
             cat <<EOF
           ## Install
 
-          ### Homebrew (macOS arm64 / Linux x86_64 / Linux arm64)
+          ### Homebrew (macOS arm64 / macOS Intel / Linux x86_64 / Linux arm64)
 
           ```bash
           brew tap roussi/tap
           brew install guardep
-          ```
-
-          ### Intel macOS (via Rosetta 2)
-
-          ```bash
-          arch -arm64 brew tap roussi/tap
-          arch -arm64 brew install --formula guardep
           ```
 
           ### Windows
@@ -241,6 +236,7 @@ jobs:
             shasum -a 256 "$file" | awk '{print $1}'
           }
           SHA_DARWIN_ARM=$(shasum_for "aarch64-apple-darwin")
+          SHA_DARWIN_X86=$(shasum_for "x86_64-apple-darwin")
           SHA_LINUX_ARM=$(shasum_for "aarch64-unknown-linux-gnu")
           SHA_LINUX_X86=$(shasum_for "x86_64-unknown-linux-gnu")
           mkdir -p tap/Formula
@@ -259,9 +255,10 @@ jobs:
                 url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/guardep-${VERSION}-aarch64-apple-darwin.tar.gz"
                 sha256 "${SHA_DARWIN_ARM}"
               end
-              # Intel macOS not shipped in this release; users on
-              # Rosetta 2 can build from source, native support
-              # returns once GitHub-hosted Intel runners stabilise.
+              on_intel do
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/guardep-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_DARWIN_X86}"
+              end
             end
 
             on_linux do
