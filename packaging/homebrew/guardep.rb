@@ -26,10 +26,11 @@ class Guardep < Formula
       url "https://github.com/roussi/guardep/releases/download/v#{version}/guardep-#{version}-aarch64-apple-darwin.tar.gz"
       sha256 "REPLACE_WITH_SHA256_AT_RELEASE_TIME"
     end
-    on_intel do
-      url "https://github.com/roussi/guardep/releases/download/v#{version}/guardep-#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "REPLACE_WITH_SHA256_AT_RELEASE_TIME"
-    end
+    # Intel macOS not shipped from v0.1.0; GitHub-hosted Intel
+    # runners are deprecated. Rosetta 2 + Apple Silicon binary
+    # works for most Intel users, or build from source. Native
+    # binary returns once a stable Intel runner alternative is
+    # available.
   end
 
   on_linux do
