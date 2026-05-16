@@ -122,7 +122,7 @@ optionally roll out shims locally for tight workflows.
 ### 3.1 From source (recommended until first tagged release)
 
 ```bash
-git clone https://github.com/aroussi/guardep && cd guardep
+git clone https://github.com/roussi/guardep && cd guardep
 cargo build --release
 sudo install -m 0755 target/release/guardep /usr/local/bin/guardep   # optional
 ```
@@ -292,7 +292,7 @@ outputs, and pinning examples; minimal usage:
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0 }
-- uses: aroussi/guardep/.github/actions/guardep-diff@main
+- uses: roussi/guardep/.github/actions/guardep-diff@main
   with:
     fail-on: block
 ```

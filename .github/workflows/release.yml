@@ -70,7 +70,11 @@ jobs:
           TAG: ${{ github.ref_name }}
           TARGET: ${{ matrix.target }}
         run: |
-          STAGING="guardep-${TAG}-${TARGET}"
+          # Strip leading `v` so artifacts are guardep-<X.Y.Z>-<target>.
+          # Both the Homebrew formula and the GitHub Action wrapper
+          # expect the version-only naming convention.
+          VERSION="${TAG#v}"
+          STAGING="guardep-${VERSION}-${TARGET}"
           mkdir -p "$STAGING"
           cp "target/${TARGET}/release/guardep" "$STAGING/"
           cp README.md LICENSE "$STAGING/"
@@ -84,7 +88,8 @@ jobs:
           TAG: ${{ github.ref_name }}
           TARGET: ${{ matrix.target }}
         run: |
-          $staging = "guardep-$env:TAG-$env:TARGET"
+          $version = $env:TAG -replace '^v',''
+          $staging = "guardep-$version-$env:TARGET"
           New-Item -ItemType Directory -Path $staging | Out-Null
           Copy-Item "target/$env:TARGET/release/guardep.exe" $staging
           Copy-Item README.md, LICENSE $staging
@@ -125,3 +130,133 @@ jobs:
             dist/guardep-*.zip.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  publish-homebrew:
+    name: publish homebrew formula
+    needs: publish
+    runs-on: ubuntu-latest
+    # Skip on prereleases (-rc, -beta, etc.) so only stable tags
+    # bump the formula. Tags must match `vX.Y.Z` exactly.
+    if: ${{ !contains(github.ref_name, '-') }}
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Checkout tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: roussi/homebrew-tap
+          path: tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          persist-credentials: true
+
+      - name: Download release tarballs
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir dist \
+            --pattern 'guardep-*.tar.gz'
+
+      - name: Render formula
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          # Pull each per-platform sha256 from its sidecar file or
+          # compute from the tarball; both work because the build job
+          # already attached `*.sha256` files to the release.
+          shasum_for() {
+            local target="$1"
+            local file="dist/guardep-${VERSION}-${target}.tar.gz"
+            if [ ! -f "$file" ]; then
+              echo "missing: $file" >&2
+              exit 1
+            fi
+            shasum -a 256 "$file" | awk '{print $1}'
+          }
+          SHA_DARWIN_ARM=$(shasum_for "aarch64-apple-darwin")
+          SHA_DARWIN_X86=$(shasum_for "x86_64-apple-darwin")
+          SHA_LINUX_ARM=$(shasum_for "aarch64-unknown-linux-gnu")
+          SHA_LINUX_X86=$(shasum_for "x86_64-unknown-linux-gnu")
+          mkdir -p tap/Formula
+          # Render directly rather than sed-replacing the template so
+          # the result is fully decoupled from the source-repo template
+          # comments and per-edit drift.
+          cat > tap/Formula/guardep.rb <<EOF
+          class Guardep < Formula
+            desc "Package-manager firewall: blocks risky npm/pnpm/yarn/mvn installs before postinstall runs"
+            homepage "https://github.com/${GITHUB_REPOSITORY}"
+            license "MIT"
+            version "${VERSION}"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/guardep-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_DARWIN_ARM}"
+              end
+              on_intel do
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/guardep-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_DARWIN_X86}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/guardep-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_ARM}"
+              end
+              on_intel do
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/guardep-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_X86}"
+              end
+            end
+
+            def install
+              # Each tarball contains a single top-level
+              # `guardep-<ver>-<target>/guardep` binary; lift it onto
+              # PATH as plain `guardep`.
+              bin.install Dir["guardep-*-*/guardep"].first => "guardep"
+            end
+
+            def caveats
+              <<~EOC
+                To enforce the package-manager firewall locally:
+
+                  guardep install-shims
+
+                This wires npm/pnpm/yarn/mvn through guardep via PATH shims placed in
+                ~/.guardep/bin. Reverse with \`guardep uninstall-shims\`.
+              EOC
+            end
+
+            test do
+              assert_match "guardep ${VERSION}", shell_output("#{bin}/guardep --version")
+              (testpath/"empty").mkpath
+              system bin/"guardep", "audit", "--path", testpath/"empty", "--fail-on", "never"
+            end
+          end
+          EOF
+
+      - name: Commit + push to tap
+        env:
+          TAG: ${{ github.ref_name }}
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          git config user.name  "guardep-release-bot"
+          git config user.email "guardep-release-bot@users.noreply.github.com"
+          git add Formula/guardep.rb
+          if git diff --cached --quiet; then
+            echo "::notice::formula already up to date for ${TAG}"
+            exit 0
+          fi
+          git commit -m "guardep ${TAG}"
+          git push

@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0    # required so we can resolve the base ref
-      - uses: aroussi/guardep/.github/actions/guardep-diff@main
+      - uses: roussi/guardep/.github/actions/guardep-diff@main
         with:
           fail-on: block    # exit 2 if the PR adds any blocking finding
 ```
@@ -51,7 +51,7 @@ jobs:
 ### Block PRs that add critical CVEs
 
 ```yaml
-- uses: aroussi/guardep/.github/actions/guardep-diff@main
+- uses: roussi/guardep/.github/actions/guardep-diff@main
   with:
     severity: critical
     fail-on: block
@@ -61,7 +61,7 @@ jobs:
 
 ```yaml
 - id: diff
-  uses: aroussi/guardep/.github/actions/guardep-diff@main
+  uses: roussi/guardep/.github/actions/guardep-diff@main
   with:
     format: json
     fail-on: never
@@ -83,7 +83,7 @@ jobs:
 ### Pin a specific guardep version
 
 ```yaml
-- uses: aroussi/guardep/.github/actions/guardep-diff@main
+- uses: roussi/guardep/.github/actions/guardep-diff@main
   with:
     guardep-version: v0.2.0
 ```

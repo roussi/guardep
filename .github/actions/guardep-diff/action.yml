@@ -92,7 +92,7 @@ runs:
         # Map to release-asset naming. Adjust here when the release
         # workflow renames artifacts. `latest` resolves via gh.
         if [ "$VERSION" = "latest" ]; then
-          VERSION="$(gh release view --repo aroussi/guardep --json tagName -q .tagName 2>/dev/null || true)"
+          VERSION="$(gh release view --repo roussi/guardep --json tagName -q .tagName 2>/dev/null || true)"
         fi
         if [ -z "${VERSION:-}" ]; then
           echo "::error::Could not resolve guardep release tag. Pass guardep-version explicitly."
@@ -110,7 +110,7 @@ runs:
             ;;
         esac
         TMPDIR="$(mktemp -d)"
-        gh release download "$VERSION" --repo aroussi/guardep --pattern "$ASSET" --dir "$TMPDIR"
+        gh release download "$VERSION" --repo roussi/guardep --pattern "$ASSET" --dir "$TMPDIR"
         tar -xzf "$TMPDIR/$ASSET" -C "$TMPDIR"
         sudo install -m 0755 "$TMPDIR/guardep" /usr/local/bin/guardep
         guardep --version

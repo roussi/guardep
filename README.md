@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/aroussi/guardep/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/aroussi/guardep/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/aroussi/guardep/actions/workflows/audit.yml"><img alt="Audit" src="https://github.com/aroussi/guardep/actions/workflows/audit.yml/badge.svg"></a>
+  <a href="https://github.com/roussi/guardep/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/roussi/guardep/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/roussi/guardep/actions/workflows/audit.yml"><img alt="Audit" src="https://github.com/roussi/guardep/actions/workflows/audit.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
   <a href="https://www.rust-lang.org/"><img alt="Built with Rust" src="https://img.shields.io/badge/Built%20with-Rust-orange.svg"></a>
   <img alt="Status" src="https://img.shields.io/badge/Status-MVP-yellow.svg">
@@ -41,7 +41,7 @@ the roadmap.
 ## Quick start
 
 ```bash
-git clone https://github.com/aroussi/guardep && cd guardep
+git clone https://github.com/roussi/guardep && cd guardep
 cargo build --release
 
 # Audit any project
@@ -100,7 +100,7 @@ Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Bac
 ### From source (recommended until first tagged release)
 
 ```bash
-git clone https://github.com/aroussi/guardep && cd guardep
+git clone https://github.com/roussi/guardep && cd guardep
 cargo build --release
 sudo install -m 0755 target/release/guardep /usr/local/bin/guardep   # optional
 ```
@@ -210,7 +210,7 @@ Action below.
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0 }
-- uses: aroussi/guardep/.github/actions/guardep-diff@main
+- uses: roussi/guardep/.github/actions/guardep-diff@main
   with:
     fail-on: block
 ```
