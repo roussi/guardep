@@ -2,9 +2,10 @@
 
 <p align="center">
   <strong>Package-manager firewall.</strong><br>
-  Deterministic dependency gate for <strong>npm / pnpm / yarn today</strong>,
-  with <strong>Maven / Gradle</strong> enforcement on the roadmap.
-  Blocks risky dependencies <em>before</em> install-time code can run - not after.
+  Deterministic dependency gate for <strong>npm / pnpm / yarn / mvn</strong>
+  installs, with <strong>Gradle</strong> audit support and a roadmap to
+  full Gradle enforcement. Blocks risky dependencies <em>before</em>
+  install-time code can run - not after.
 </p>
 
 <p align="center">
@@ -31,9 +32,11 @@ it with advisory, malware-feed, package-intel, source-behavior, license,
 install-script, and provenance checks, then refuses to forward to the real
 package manager when policy is violated.
 
-The strongest path today is JavaScript: npm, pnpm, and yarn shims. Maven
-dependency resolution is implemented for audit workflows, and Maven/Gradle
-enforcement is the next expansion.
+The strongest path today is JavaScript: npm, pnpm, and yarn shims.
+Maven gets both an `mvn install`/`package`/`verify` shim and a
+dependency-tree audit resolver. Gradle is audited via
+`gradle dependencies` (Groovy or Kotlin DSL); a Gradle shim is on
+the roadmap.
 
 ## Quick start
 
@@ -60,8 +63,11 @@ Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Bac
 - **Multi-source evaluators in parallel.** OSV.dev advisories, OSSF malicious-package feed, npm registry intel, source-behavior scanning, license checks, install-script analysis, and Sigstore provenance.
 - **EPSS + CISA KEV CVE enrichment.** Every CVE finding is annotated with its EPSS exploit-probability percentile and a KEV badge when the CVE is on CISA's Known Exploited Vulnerabilities list. KEV membership force-promotes severity to Critical; configurable EPSS threshold bumps severity one tier.
 - **Composite risk scoring.** Weighted 0-100 score from transparent reasons. Single-maintainer alone -> Info; few-versions + fresh-publish + single-maintainer -> Medium; typosquat alone -> High.
-- **Source behavior scanning.** Detects eval, dynamic require, network access, filesystem access, environment variable reads, URL strings, and high-entropy strings in installed package source.
+- **Source behavior scanning.** Detects eval, dynamic require, network access, filesystem access, environment variable reads, URL strings, and high-entropy strings in installed package source. Aggregated per (package, behavior) by default; `--granular` switches to one finding per call-site with byte ranges.
 - **License and deprecation findings.** Flags missing, unidentified, or deny-listed licenses and npm versions explicitly deprecated by maintainers.
+- **Maintainer-rotation detector.** Snapshots the npm maintainer set per package and flags package-takeover risk when the set changes between scans (after a 12h stabilisation window so first-ever scans don't false-positive).
+- **Multiple output formats.** `--format` accepts `table` (default), `json`, `cyclonedx` (CycloneDX 1.5 SBOM), and `sarif` (SARIF 2.1.0 ready for GitHub code-scanning).
+- **PR-aware diff.** `guardep diff --base ./worktrees/main --head .` reports only the findings the head adds. Drop-in [`.github/actions/guardep-diff`](./.github/actions/guardep-diff/) composite action uploads SARIF to code-scanning automatically.
 - **AST static analysis** of postinstall scripts. Detects process-spawn, credential reads, dynamic code execution, base64-decode -> eval chains, dynamic require/import, network calls. AST results promote regex severity (never demote).
 - **Sigstore crypto verification.** Fulcio cert chain, DSSE signature, SCT. Identity bound to GitHub Actions OIDC. Falls back to presence + identity offline. Rekor inclusion proof pending upstream sigstore-rs release.
 - **Honest output.** Findings sorted Critical -> Info, alphabetical within tier. `--severity` filters display threshold. `--fail-on` controls exit code separately. Composite risk scores show every contributing reason.
@@ -73,7 +79,7 @@ Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Bac
 | ------------------------------------- | ------------------------------------------------------------------------------------------ |
 | Audit existing lockfile               | Works. npm/pnpm/yarn lockfiles parsed, evaluators run in parallel.                         |
 | OSV.dev advisory matching             | Works. Batch endpoint, SQLite cache, semver range matching, per-major fix selection.       |
-| OSSF malicious-package feed           | Works. Flags matched packages as malware independent of OSV advisory lag.                  |
+| OSSF malicious-package feed           | Works. Two-stage protocol with OSV-shape version-range matching so only versions actually marked malicious flag (no name-only false positives). |
 | npm registry risk scoring             | Works. Maintainer count, version count, fresh-publish, abandonment, typosquat detection.   |
 | Source behavior scanning              | Works when package source is present in `node_modules`; audit/CI signal, not a complete pre-download guarantee. |
 | License checks                        | Works. Missing, unidentified, and configured deny-list findings.                           |
@@ -82,15 +88,16 @@ Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Bac
 | Sigstore provenance                   | Presence + identity + full crypto verification (Fulcio cert chain, DSSE, SCT). Inclusion proof pending sigstore-rs upstream release. |
 | Pre-install gate (`npm ci`)           | Works when invoked through the shim AND lockfile is up-to-date.                            |
 | Pre-install gate (`npm install foo`)  | Works via temp-dir dry-run resolution (copies `package.json` into a tempdir, materializes lockfile with `npm install --package-lock-only --ignore-scripts`, audits the result). |
-| Maven                                 | Audit resolver works via `mvn dependency:tree -DoutputType=tgf`. OSV ranges use Apache version-order comparator. No shim yet. |
-| Gradle                                | Planned.                                                                                   |
+| Maven                                 | Audit resolver via `mvn dependency:tree -DoutputType=tgf` plus a shim that intercepts `mvn install`/`package`/`verify` and refuses to forward on block. |
+| Gradle                                | Audit resolver via `gradle dependencies --configuration runtimeClasspath` (prefers `./gradlew`); Groovy and Kotlin DSL both supported. Shim still planned. |
+| Maintainer-rotation (`new-maintainer`) | Works. Diffs cached maintainer set against fresh registry snapshot; gated by a 12h stabilisation window. |
+| SARIF output                          | Works. SARIF 2.1.0 with byte-range physicalLocation for source-behavior findings; ready for GitHub code-scanning. |
+| GitHub Action                         | Works. Composite action at [`.github/actions/guardep-diff`](./.github/actions/guardep-diff/) wraps `guardep diff` and uploads SARIF. |
 | Bypass via `/usr/local/bin/npm`       | **Possible.** PATH-based shim is not airtight against an attacker who already has shell access. |
 
 ## Installation
 
-### From source (only option for now)
-
-Pre-built binaries via `guardep install-shims` and `cargo install` are coming with the first tagged release. For now, build locally:
+### From source (recommended until first tagged release)
 
 ```bash
 git clone https://github.com/aroussi/guardep && cd guardep
@@ -98,11 +105,18 @@ cargo build --release
 sudo install -m 0755 target/release/guardep /usr/local/bin/guardep   # optional
 ```
 
+Crates.io metadata (description, repository, keywords, categories,
+rust-version) is wired in both crate manifests so `cargo install
+guardep-cli` will work as soon as the first tag ships. A Homebrew
+formula template lives in [`packaging/homebrew/guardep.rb`](./packaging/homebrew/guardep.rb)
+and will be pushed to a tap on the same release; see
+[`packaging/README.md`](./packaging/README.md) for the publish flow.
+
 ### Wire it through your shell
 
 `guardep install-shims` does two things:
 
-1. Symlinks `~/.guardep/bin/{npm,pnpm,yarn}` to the guardep binary.
+1. Symlinks `~/.guardep/bin/{npm,pnpm,yarn,mvn}` to the guardep binary.
 2. Prepends `~/.guardep/bin` to `PATH` in `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.config/fish/config.fish` (Unix) or `$PROFILE` (Windows PowerShell).
 
 Each rc file is backed up to `<file>.guardep.bak` before the first edit. Changes sit between `# >>> guardep-shim >>>` / `# <<< guardep-shim <<<` marker comments so removal is exact. On a tty the command asks before editing; in CI / piped input it proceeds.
@@ -122,9 +136,12 @@ Reverse with `guardep uninstall-shims`: strips the symlinks and the marker block
 guardep audit --path ./frontend
 guardep audit --path ./frontend --collapse                 # one row per package
 guardep audit --path ./frontend --collapse --format json   # CI-friendly
+guardep audit --path ./frontend --format cyclonedx         # CycloneDX 1.5 SBOM
+guardep audit --path ./frontend --format sarif             # SARIF 2.1.0 for code-scanning
 guardep audit --path ./frontend --severity high            # only High + Critical
 guardep audit --path ./frontend --severity info            # show everything (incl. single-maintainer noise)
 guardep audit --path ./frontend --fail-on warn             # CI: exit 1 on warnings too
+guardep audit --path ./frontend --granular                 # one finding per source-behavior call-site
 guardep --verbose audit --path ./frontend                  # evaluator timings + HTTP logs
 ```
 
@@ -140,6 +157,7 @@ cd ./my-project
 npm install      # audited; blocks if malware/critical
 pnpm install     # audited
 yarn install     # audited
+mvn install      # audited; mvn package and verify also intercepted
 ```
 
 Bypass for one command (calls real binary directly, skips audit):
@@ -172,6 +190,36 @@ guardep diff --base ./worktrees/main --head .                  # new findings on
 guardep diff --base ./worktrees/main --head . --fail-on warn   # exit 1 on new warnings
 guardep diff --base ./worktrees/main --head . --format json    # CI-friendly
 ```
+
+### SARIF export (GitHub code-scanning)
+
+```bash
+guardep audit --path . --format sarif > guardep.sarif
+guardep diff --base ./worktrees/main --head . --format sarif > diff.sarif
+```
+
+Map: source-behavior findings carry byte-range
+`physicalLocation.region.byteOffset` / `byteLength`; CVE findings
+expose EPSS / KEV as `properties[]` with keys `guardep:epss:score`,
+`guardep:epss:percentile`, `guardep:kev`. Drop into
+`github/codeql-action/upload-sarif@v3` or use the bundled GitHub
+Action below.
+
+### GitHub Action
+
+```yaml
+- uses: actions/checkout@v4
+  with: { fetch-depth: 0 }
+- uses: aroussi/guardep/.github/actions/guardep-diff@main
+  with:
+    fail-on: block
+```
+
+Resolves the base ref, runs `guardep diff`, exposes
+`new-blocks` / `new-warnings` outputs, and (when `format=sarif`)
+uploads to code-scanning. See
+[`.github/actions/guardep-diff/README.md`](./.github/actions/guardep-diff/README.md)
+for inputs, outputs, and pinning examples.
 
 ### CycloneDX SBOM export
 
@@ -274,38 +322,43 @@ deduped, and rendered together.
 
 ## How it compares
 
-|                                  | npm audit | OSV-Scanner | Trivy        | Socket / Phylum  | **guardep**          |
-| -------------------------------- | --------- | ----------- | ------------ | ---------------- | -------------------- |
-| Package-manager enforcement      | no        | no          | no           | yes              | **npm/pnpm/yarn now; Maven/Gradle planned** |
-| PR / lockfile audit              | yes       | yes         | partial      | yes              | **yes**              |
-| Multi-source dependency intel    | partial   | no          | no           | yes              | **yes**              |
-| Malware-class policy             | no        | no          | indirect     | yes              | **yes**              |
-| Source behavior scanning         | no        | no          | no           | yes              | **yes, deterministic heuristics** |
-| Postinstall script analysis      | no        | no          | no           | yes              | **yes, regex + AST** |
-| Risk scoring                     | no        | no          | no           | yes              | **yes**              |
-| License policy                   | no        | no          | yes          | yes              | **yes (deny-list)**  |
-| Provenance enforcement           | partial   | no          | no           | partial          | **full crypto verification** |
-| EPSS + KEV CVE enrichment        | no        | no          | no           | no               | **yes**              |
-| CycloneDX SBOM export            | no        | partial     | yes          | yes (paid)       | **yes**              |
-| PR-aware diff (new findings only)| no        | no          | no           | yes (paid)       | **yes**              |
-| Open source                      | yes       | yes         | yes          | no               | **yes (MIT)**        |
-| Container / IaC scan             | no        | no          | yes          | no               | no                   |
+|                                   | npm audit | OSV-Scanner | Trivy        | Socket / Phylum  | **guardep**          |
+| --------------------------------- | --------- | ----------- | ------------ | ---------------- | -------------------- |
+| Package-manager enforcement       | no        | no          | no           | yes              | **npm/pnpm/yarn/mvn now; Gradle planned** |
+| PR / lockfile audit               | yes       | yes         | partial      | yes              | **yes**              |
+| Multi-source dependency intel     | partial   | no          | no           | yes              | **yes**              |
+| Malware-class policy              | no        | no          | indirect     | yes              | **yes (OSV + OSSF, version-aware)** |
+| Source behavior scanning          | no        | no          | no           | yes              | **yes, deterministic heuristics** |
+| Postinstall script analysis       | no        | no          | no           | yes              | **yes, regex + AST** |
+| Risk scoring                      | no        | no          | no           | yes              | **yes**              |
+| Maintainer-rotation detection     | no        | no          | no           | yes              | **yes (snapshot diff)** |
+| License policy                    | no        | no          | yes          | yes              | **yes (deny-list)**  |
+| Provenance enforcement            | partial   | no          | no           | partial          | **full crypto verification** |
+| EPSS + KEV CVE enrichment         | no        | no          | no           | no               | **yes**              |
+| CycloneDX SBOM export             | no        | partial     | yes          | yes (paid)       | **yes**              |
+| SARIF / code-scanning             | no        | yes         | yes          | yes              | **yes (with byte-range locations)** |
+| PR-aware diff (new findings only) | no        | no          | no           | yes (paid)       | **yes**              |
+| GitHub Action                     | no        | yes         | yes          | yes              | **yes (composite action wired to SARIF)** |
+| Open source                       | yes       | yes         | yes          | no               | **yes (MIT)**        |
+| Container / IaC scan              | no        | no          | yes          | no               | no                   |
 
 ## Roadmap
 
 - [x] **Temp-dir pre-install resolution.** Audits the intended graph (`npm install foo@latest`), not just the existing lockfile.
 - [x] **AST postinstall analysis** via `swc_ecma_parser`. Cross-file dataflow is still future work.
-- [x] **Source behavior, license, deprecated-version, and OSSF threat-feed findings.**
+- [x] **Source behavior, license, deprecated-version, OSSF threat-feed (version-aware), and maintainer-rotation findings.**
 - [x] **Sigstore crypto verification.** Fulcio cert chain, DSSE signature, SCT, identity policy bound to the GitHub Actions OIDC issuer.
 - [x] **Maven resolver** (`mvn dependency:tree -DoutputType=tgf`) with Apache version-order comparator.
+- [x] **Maven shim.** Intercepts `mvn install`/`package`/`verify` and refuses to forward on block.
+- [x] **Gradle audit resolver** (`gradle dependencies --configuration runtimeClasspath`); Groovy and Kotlin DSL both supported.
+- [x] **CycloneDX 1.5 SBOM** + **SARIF 2.1.0** output (with byte-range locations for source-behavior findings).
+- [x] **`guardep diff`** PR-aware audit + composite **GitHub Action** that wraps it and uploads SARIF.
+- [x] **Crates.io metadata** + **Homebrew formula template** wired for the first tagged release.
 - [x] **Cross-platform PATH wiring** (zsh, bash, fish, PowerShell) with idempotent install + clean uninstall.
 - [x] **Multi-OS release pipeline** (Linux x86/arm, macOS x86/arm, Windows x86) building tarballs + zips + sha256s, attached to GitHub Releases.
 - [ ] **Rekor inclusion proof.** Pending [sigstore-rs#543](https://github.com/sigstore/sigstore-rs/pull/543) shipping to crates.io.
-- [ ] **GitHub Action wrapper** around `guardep diff` for PR-aware enforcement.
-- [ ] **SARIF output.**
-- [ ] **Homebrew tap** + `cargo install guardep`.
-- [ ] **Maven shim** (intercept install-equivalent invocations).
-- [ ] **Gradle resolver.**
+- [ ] **First tagged release** publishing to the Homebrew tap and crates.io.
+- [ ] **Gradle shim** (intercept install-equivalent invocations).
 - [ ] **Cargo / pip / RubyGems** ecosystem support beyond Maven + npm.
 
 ## Contributing

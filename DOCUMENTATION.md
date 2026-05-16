@@ -1,7 +1,8 @@
 # guardep — Documentation
 
 > **Package-manager firewall.** Deterministic dependency gate for
-> npm / pnpm / yarn (Maven / Gradle on the roadmap). Blocks risky
+> npm / pnpm / yarn / mvn installs, with Gradle audited via
+> `gradle dependencies` (Gradle shim still planned). Blocks risky
 > dependencies *before* install-time code can run, not after.
 
 This document is the comprehensive reference for guardep: what it is,
@@ -118,7 +119,7 @@ optionally roll out shims locally for tight workflows.
 
 ## 3. Installation
 
-### 3.1 From source (only option for now)
+### 3.1 From source (recommended until first tagged release)
 
 ```bash
 git clone https://github.com/aroussi/guardep && cd guardep
@@ -126,11 +127,26 @@ cargo build --release
 sudo install -m 0755 target/release/guardep /usr/local/bin/guardep   # optional
 ```
 
-Pre-built binaries (Homebrew tap, `cargo install guardep`, GitHub
-Releases tarballs) ship with the first tagged release. Pipeline
-already builds Linux x86/arm, macOS x86/arm, Windows x86 artifacts.
+Crates.io metadata (description, repository, keywords, categories,
+rust-version) is wired in both crate manifests so
+`cargo install guardep-cli` will Just Work as soon as the first
+tagged release ships. A Homebrew formula template lives at
+[`packaging/homebrew/guardep.rb`](./packaging/homebrew/guardep.rb)
+and gets pushed to the tap by the release pipeline; see
+[`packaging/README.md`](./packaging/README.md) for the publish flow.
+
+Multi-OS release tarballs (Linux x86/arm, macOS x86/arm, Windows
+x86) are already built by `.github/workflows/release.yml` on each
+tag; the GitHub Action wrapper (§13.4) downloads them via `gh
+release`.
 
 ### 3.2 Wire it through your shell
+
+`guardep install-shims` symlinks `~/.guardep/bin/{npm,pnpm,yarn,mvn}`
+to the guardep binary and prepends that directory to `PATH`. The
+Maven shim only intercepts the dependency-resolving lifecycle
+phases (`install`, `package`, `verify`); other goals like `compile`
+or `test` pass through unchanged.
 
 ```bash
 guardep install-shims
@@ -193,11 +209,12 @@ install.
 
 ```
 guardep audit [--path PATH]
-              [--format table|json|cyclonedx]
+              [--format table|json|cyclonedx|sarif]
               [--collapse]
               [--severity info|low|medium|high|critical]
               [--fail-on never|warn|block]
               [--lockfile NAME]
+              [--granular]
 ```
 
 | Flag | Default | Purpose |
@@ -207,7 +224,8 @@ guardep audit [--path PATH]
 | `--collapse` | off | Group findings by `package@version`, joining IDs |
 | `--severity` | `low` | Minimum severity to display (does not affect what evaluators emit or what policy enforces, only the report) |
 | `--fail-on` | `block` | Threshold above which exit is non-zero. `never`: always exit 0. `warn`: exit 1 on warnings, 2 on blocks. `block`: exit 2 on blocks |
-| `--lockfile` | auto | Force one of `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `pom.xml` |
+| `--lockfile` | auto | Force one of `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `pom.xml`, `build.gradle`, `build.gradle.kts` |
+| `--granular` | off | Emit one source-behavior finding per call-site instead of aggregating per `(package, behavior)`. Trades concision for byte-range granularity. |
 
 Examples:
 
@@ -217,8 +235,10 @@ guardep audit --severity high                  # only High + Critical rows
 guardep audit --collapse --format json         # one row per package, JSON for CI
 guardep audit --severity info                  # show every signal incl. single-maintainer
 guardep audit --fail-on warn                   # CI: exit 1 on warnings too
+guardep audit --granular                       # one finding per source-behavior call-site
 guardep --verbose audit                        # evaluator timings + HTTP logs
 guardep audit --format cyclonedx > sbom.json   # CycloneDX 1.5 SBOM export
+guardep audit --format sarif > guardep.sarif   # SARIF 2.1.0 for code-scanning
 ```
 
 ### 4.2 `diff`
@@ -230,16 +250,17 @@ tree.
 
 ```
 guardep diff --base <PATH> --head <PATH>
-             [--format table|json|cyclonedx]
+             [--format table|json|cyclonedx|sarif]
              [--severity info|low|medium|high|critical]
              [--fail-on never|warn|block]
+             [--granular]
 ```
 
 | Flag | Required | Purpose |
 |---|---|---|
 | `--base` | yes | Baseline project root (typically a `git worktree` of `main`) |
 | `--head` | yes | Head project root (the proposed change) |
-| `--format`, `--severity`, `--fail-on` | no | Same semantics as `audit` |
+| `--format`, `--severity`, `--fail-on`, `--granular` | no | Same semantics as `audit` |
 
 Identity of a finding for diff purposes is the tuple
 `(package, version, kind, id)`. Findings whose `pkg@version`
@@ -254,6 +275,26 @@ Examples:
 guardep diff --base ./worktrees/main --head .
 guardep diff --base ./worktrees/main --head . --fail-on warn
 guardep diff --base ./worktrees/main --head . --format cyclonedx > sbom-delta.json
+guardep diff --base ./worktrees/main --head . --format sarif > diff.sarif
+```
+
+### 4.2.1 GitHub Action wrapper
+
+The composite action at
+[`.github/actions/guardep-diff`](./.github/actions/guardep-diff/)
+runs `guardep diff` end-to-end on every PR: resolves the base ref,
+spins up a worktree, downloads the matching guardep release binary,
+runs the diff, exposes `new-blocks` / `new-warnings` outputs, and
+(when `format=sarif`) uploads to GitHub code-scanning via
+`github/codeql-action/upload-sarif@v3`. See its README for inputs,
+outputs, and pinning examples; minimal usage:
+
+```yaml
+- uses: actions/checkout@v4
+  with: { fetch-depth: 0 }
+- uses: aroussi/guardep/.github/actions/guardep-diff@main
+  with:
+    fail-on: block
 ```
 
 ### 4.3 `fix`
@@ -333,12 +374,17 @@ guardep shim <tool> [args...]
 ```
 
 Internal dispatch path used when guardep is invoked via its
-`argv[0]` symlink (`~/.guardep/bin/npm`). Direct invocation is
-supported for debugging:
+`argv[0]` symlink (`~/.guardep/bin/npm` or `~/.guardep/bin/mvn`).
+Direct invocation is supported for debugging:
 
 ```bash
 guardep shim npm install some-package
+guardep shim mvn install
 ```
+
+Maven shim only intercepts the resolution-triggering phases
+(`install`, `package`, `verify`); other goals (`compile`, `test`,
+`clean`) pass through unchanged so audit cost stays bounded.
 
 ---
 
@@ -349,6 +395,7 @@ guardep shim npm install some-package
 | `table` | default | Coloured ANSI table for humans; honours `NO_COLOR` |
 | `json` | `--format json` | Stable schema for CI / scripting |
 | `cyclonedx` | `--format cyclonedx` | CycloneDX 1.5 JSON SBOM compatible with Dependency-Track, OWASP Defectdojo, GitHub dependency review |
+| `sarif` | `--format sarif` | SARIF 2.1.0 ready for `github/codeql-action/upload-sarif@v3`. Source-behavior findings carry `physicalLocation.region.byteOffset` / `byteLength`; CVE findings expose EPSS / KEV as `properties[]` (`guardep:epss:score`, `guardep:epss:percentile`, `guardep:kev`). Stable `partialFingerprints` so code-scanning collapses duplicate alerts across PRs. |
 
 **JSON shape** (top-level):
 
@@ -488,14 +535,32 @@ Renderer shows `[KEV EPSS p99]` style badges next to the CVE id.
 ### 7.3 OSSF threat feed (`malware`)
 
 - **Source:** OSSF malicious-packages repo via the GitHub Trees API
-  (`https://api.github.com/repos/ossf/malicious-packages/git/trees/main?recursive=1`).
+  (`https://api.github.com/repos/ossf/malicious-packages/git/trees/main?recursive=1`)
+  for the index, then `raw.githubusercontent.com` for each MAL JSON.
 - **Coverage:** ~6000 npm package names as of 2026-Q2 plus PyPI /
   RubyGems / crates.io (npm only indexed for now).
 - **Why supplement OSV:** OSSF entries often land hours-to-days
   before OSV indexes them. Acts as a fast pre-screen even when OSV
   is slow or down.
-- **Cache:** SQLite blob, namespace `threat_feed`, key `ossf`.
+- **Two-stage protocol:**
+  1. **Stage A — index** (one HTTP call, cached per `cache_refresh_hours`):
+     fetch the tree, build a `name → MAL-paths` map of every npm
+     entry, persist as JSON in cache namespace `threat_feed/ossf-index`.
+  2. **Stage B — per-pkg fetch** (only on hit): for each installed
+     pkg whose lowercased name appears in the index, fetch every
+     listed MAL JSON, parse with the OSV deserializer, and apply the
+     existing `range::version_in_ranges` matcher. Results cached per
+     pkg name in namespace `threat_feed_pkg/<name>` so the second
+     audit on the same dep tree makes zero network calls.
 - **Severity:** Critical (always). `Action` defaults to `block`.
+- **Findings carry the real MAL id** (e.g. `MAL-2026-2307`), the
+  OSSF summary, advisory aliases (e.g. the GHSA-malware id), and
+  fixed_versions when present — same shape as the OSV evaluator.
+- **Why version-aware matters:** before the two-stage protocol, any
+  installed version of any name in the OSSF index would flag.
+  `axios@0.21.0` (clean) tripped on `MAL-2026-2307`, which only
+  affects `axios@0.30.4` and `1.14.1`. Range matching eliminates
+  this class of false positive.
 
 ### 7.4 npm registry intel (`risk_score`)
 
@@ -536,6 +601,25 @@ Independent of risk score — deprecation is npm-authoritative
 (maintainer-set), so it's never gated by the composite-score
 threshold.
 
+### 7.5b Maintainer rotation (`risk_score:new-maintainer`)
+
+Diffs the maintainer set we cached on a previous scan against the
+freshly-fetched one. When sets differ AND the prior snapshot is at
+least `MIN_OBSERVATION_HOURS = 12` old, emits a High-severity
+finding listing `added` and `removed` maintainer logins.
+
+- **Mechanism.** `IntelSnapshot.maintainer_logins` is captured on
+  every fetch (lowercased, sorted, deduped). On the next refresh
+  cycle the evaluator pulls the prior row through `KvCache::get_any`
+  (which ignores TTL), compares, and emits.
+- **Stabilisation window.** Without the 12h floor, the very first
+  scan would flag every package because "no prior" looks like
+  "different from now". The window is intentionally short: real
+  package-takeover attacks usually publish within hours.
+- **Why High?** Maintainer rotation is a known compromise vector
+  (Shai-Hulud-style takeovers). Users can soften via
+  `policy.warn_if_risk_score_above` or the finding allowlist.
+
 ### 7.6 Source behavior scan (`source_behavior`)
 
 Cross-file AST scan of every JS/TS file in installed packages. Walks
@@ -544,7 +628,7 @@ via `swc_ecma_parser`, runs a visitor with binding-table-aware alias
 resolution (`var fs = require("node:fs"); fs.readFile(...)` resolves
 to `fs.readFile`).
 
-Detects 7 behaviors:
+Detects 8 behaviors:
 
 | Behavior | Detection |
 |---|---|
@@ -557,17 +641,25 @@ Detects 7 behaviors:
 | `minified_file` | file ≥ 4KB with average line length > 500. Suppressed for `*.min.js`, `dist/`, `build/`, `umd/`, `esm/`, `cjs/`, `lib/`, `browser/`, and `package.json#main` (intentional bundle output) |
 | `url_strings` | string literal containing `http(s)://`, `ws(s)://`, `ftp(s)://`, `file://` (skips `git://`, `data:`, `npm://`) |
 
-One finding per `(package, behavior)` pair. Per-call-site locations
-appear in `details.locations[]` with byte ranges (`bytes.start`,
-`bytes.end`), file paths, line numbers, and notes (e.g. env var
-name, called function).
+One finding per `(package, behavior)` pair by default; per-call-site
+locations appear in `details.locations[]` with byte ranges
+(`bytes.start`, `bytes.end`), file paths, line numbers, and notes
+(e.g. env var name, called function).
+
+Pass `--granular` (or set `policy.source_scan_granular = true`) to
+flip to one finding per call-site instead. Each finding then
+carries a single location, a deterministic id of the form
+`behavior:<behavior>:<pkg>:<file>:<byte-offset>`, and skips cluster
+promotion. Useful when feeding SARIF into a code-scanning UI that
+wants to highlight individual byte ranges.
 
 Severity:
 
 - Base: Low (network/fs/env/entropy/minified/urls), Medium
   (eval/dynamic-require).
 - Cluster promotion: ≥ 3 occurrences in one package bumps one tier
-  (clusters look more intentional than incidental).
+  (clusters look more intentional than incidental). Disabled in
+  granular mode (each finding represents a single occurrence).
 
 ### 7.7 Postinstall script analysis (`postinstall_script`)
 
@@ -757,19 +849,21 @@ packages (left-pad).
 | Per-major fix selection | no | partial | no | yes | **yes** |
 | EPSS exploit-probability enrichment | no | no | no | no | **yes** |
 | CISA KEV enrichment | no | no | no | no | **yes** |
-| Confirmed-malware feed | no | partial (via OSV) | no | yes | **yes (OSV + OSSF independent)** |
+| Confirmed-malware feed | no | partial (via OSV) | no | yes | **yes (OSV + OSSF, version-aware ranges)** |
 | Pre-install gate (npm/pnpm/yarn) | no | no | no | yes (via wrapper) | **yes (PATH shim)** |
+| Pre-install gate (Maven) | no | no | no | partial | **yes (mvn install/package/verify)** |
 | Postinstall script analysis | no | no | no | yes | **yes (regex + AST)** |
-| Source behavior scanning | no | no | no | yes | **yes (cross-file AST)** |
+| Source behavior scanning | no | no | no | yes | **yes (cross-file AST + `--granular`)** |
 | Risk score (composite) | no | no | no | yes | **yes** |
+| Maintainer-rotation (`new-maintainer`) | no | no | no | yes (`newAuthor`) | **yes (snapshot diff, 12h window)** |
 | Typosquat detection | no | no | no | yes | **yes (with reputation x-check)** |
 | License policy (deny-list) | no | no | yes | yes | **yes** |
 | Deprecated-version detection | partial | no | no | yes | **yes** |
 | Sigstore provenance enforcement | partial (presence) | no | no | partial | **full crypto verification** |
-| PR-aware diff (only NEW findings) | no | no | no | yes (paid) | **yes** |
+| PR-aware diff (only NEW findings) | no | no | no | yes (paid) | **yes (`guardep diff` + GitHub Action)** |
 | CycloneDX SBOM export | no | partial | yes | yes (paid) | **yes** |
-| SARIF output | no | yes | yes | yes | **planned** |
-| Multi-ecosystem (npm/PyPI/Cargo/Maven/Go/Ruby) | no | yes | yes | yes | **npm + Maven (audit)** |
+| SARIF output | no | yes | yes | yes | **yes (with byte-range locations)** |
+| Multi-ecosystem (npm/PyPI/Cargo/Maven/Gradle/Go/Ruby) | no | yes | yes | yes | **npm + Maven shim + Gradle audit** |
 | Container / IaC scan | no | no | yes | no | **no** |
 | OSS license | yes | yes | yes | no (proprietary) | **yes (MIT)** |
 | Local-first / no SaaS | yes | yes | yes | no (uploads manifest) | **yes** |
@@ -790,12 +884,13 @@ packages (left-pad).
 | `networkAccess` | 15 | 11 (73%) | partial |
 | `unidentifiedLicense` | 1 | 0 (different SPDX recognition) | partial; deny-list closes the gap |
 | `minifiedFile` | 1 | 0 | guardep over-suppresses (pre-bundled output) |
-| `newAuthor` | 7 | 0 | not yet implemented |
-| `gptAnomaly` | 25 | 0 | not implemented (no LLM dependency) |
+| `newAuthor` / `new-maintainer` | 7 | implemented (snapshot-diff, fires on second observation) | parity once second scan exists |
+| `gptAnomaly` | 25 | 0 | not implemented (deliberate; no LLM dependency) |
 
-Net: **guardep matches or beats Socket on 16 axes; Socket wins on
-2** (`newAuthor` requires maintainer-history snapshots; `gptAnomaly`
-requires LLM API).
+Net: **guardep matches or beats Socket on 17 axes; Socket wins on
+1** (`gptAnomaly`, deliberately skipped to avoid an LLM dependency).
+The OSSF false-positive on `axios@0.21.0` from earlier runs is gone
+after the version-aware threat-feed protocol landed.
 
 ### 11.3 Distribution / cost
 
@@ -974,7 +1069,7 @@ left in place so you can revert further if needed.
 
 ### 15.1 Done
 
-- Pre-install gate via PATH shim (npm/pnpm/yarn)
+- Pre-install gate via PATH shim (npm/pnpm/yarn/mvn)
 - Temp-dir dry-run resolution for `npm install <newpkg>`
 - OSV.dev advisory matching with per-major fix selection
 - npm registry intel: maintainers, versions, abandonment, fresh
@@ -983,15 +1078,25 @@ left in place so you can revert further if needed.
   base64→eval chains)
 - Sigstore Fulcio + DSSE + SCT verification (Rekor pending upstream)
 - EPSS + CISA KEV CVE enrichment
-- OSSF malicious-packages threat feed
+- OSSF malicious-packages threat feed (two-stage protocol with
+  OSV-shape version-range matching)
 - Cross-file source behavior scan (network/fs/env/eval/dynamic
   require/entropy/minified/URLs) with require/import alias
-  resolution
+  resolution; `--granular` opts in to per-call-site findings
 - License findings (missing/unidentified/denied) with SPDX classifier
 - Per-version deprecation findings
+- Maintainer-rotation (`new-maintainer`) detector via cross-snapshot
+  diff with 12h stabilisation window
 - CycloneDX 1.5 SBOM export
-- `guardep diff` PR-aware audit
-- Maven dependency resolver (audit only, no shim)
+- SARIF 2.1.0 output with byte-range physicalLocation entries for
+  source-behavior findings; ready for GitHub code-scanning
+- `guardep diff` PR-aware audit + composite GitHub Action wrapper
+  ([`.github/actions/guardep-diff`](./.github/actions/guardep-diff/))
+  that uploads SARIF
+- Maven dependency resolver + `mvn install`/`package`/`verify` shim
+- Gradle audit resolver (`gradle dependencies`, Groovy + Kotlin DSL)
+- Crates.io metadata + Homebrew formula template wired for the
+  first tagged release
 - Cross-platform PATH wiring (zsh/bash/fish + PowerShell)
 - Multi-OS release pipeline (Linux x86/arm, macOS x86/arm,
   Windows x86)
@@ -1000,16 +1105,11 @@ left in place so you can revert further if needed.
 
 - **Rekor inclusion proof.** Pending sigstore-rs#543 shipping to
   crates.io.
-- **GitHub Action wrapper** around `guardep diff` for plug-and-play
-  PR enforcement.
-- **SARIF output** for GitHub code-scanning UI integration.
-- **Homebrew tap** + `cargo install guardep` packaging.
-- **Maven shim** (intercept install-equivalent invocations).
-- **Gradle resolver.**
-- **`newAuthor` detection** via maintainer-set snapshot diffs over
-  time (catches package-takeover compromises).
-- **Per-call-site finding granularity** (currently one finding per
-  pkg+behavior; granular mode for byte-range tooling).
+- **First tagged release** publishing to the Homebrew tap and
+  crates.io (the formula template + crate metadata are already
+  wired; just need the tag).
+- **Gradle shim** (intercept install-equivalent invocations); the
+  audit resolver is already in place.
 
 ### 15.3 Future
 
@@ -1017,6 +1117,9 @@ left in place so you can revert further if needed.
 - **PostgreSQL / Redis cache backend** for shared CI caches.
 - **Web UI** for the JSON output (local-only, served by guardep).
 - **Plugin API** for organisation-specific evaluators.
+- **`gptAnomaly`-equivalent** detector if/when an LLM-free
+  approximation (e.g. learned anomaly scoring on AST features)
+  beats the false-positive rate of the current heuristics.
 
 ---
 
