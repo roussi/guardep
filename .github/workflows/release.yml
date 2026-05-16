@@ -123,6 +123,59 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Render install snippet
+        id: install_snippet
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          # The body is rendered once per tag and prepended to the
+          # auto-generated changelog. Keeps the install commands at
+          # the top of every Release page.
+          {
+            echo "body<<INSTALL_EOF"
+            cat <<EOF
+          ## Install
+
+          ### Homebrew (macOS arm64 / Linux x86_64 / Linux arm64)
+
+          ```bash
+          brew tap roussi/tap
+          brew install guardep
+          ```
+
+          ### Intel macOS (via Rosetta 2)
+
+          ```bash
+          arch -arm64 brew tap roussi/tap
+          arch -arm64 brew install --formula guardep
+          ```
+
+          ### Windows
+
+          Download `guardep-${VERSION}-x86_64-pc-windows-msvc.zip` from the assets below, unzip, place `guardep.exe` on PATH.
+
+          ### From source (any platform with Rust toolchain)
+
+          ```bash
+          cargo install --git https://github.com/${GITHUB_REPOSITORY} guardep-cli --tag ${TAG}
+          ```
+
+          ### Verify
+
+          ```bash
+          guardep --version    # → guardep ${VERSION}
+          guardep --help
+          ```
+
+          See the [README](https://github.com/${GITHUB_REPOSITORY}#readme) and [DOCUMENTATION.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/DOCUMENTATION.md) for full usage.
+
+          ---
+          EOF
+            echo "INSTALL_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -132,6 +185,8 @@ jobs:
             dist/guardep-*.zip
             dist/guardep-*.zip.sha256
           generate_release_notes: true
+          append_body: true
+          body: ${{ steps.install_snippet.outputs.body }}
           fail_on_unmatched_files: true
 
   publish-homebrew:

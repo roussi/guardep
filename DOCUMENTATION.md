@@ -119,28 +119,130 @@ optionally roll out shims locally for tight workflows.
 
 ## 3. Installation
 
-### 3.1 From source (recommended until first tagged release)
+Pick the path for your platform. Every release builds:
+
+| Target | Asset (in GitHub Release) |
+|---|---|
+| Linux x86_64 | `guardep-<ver>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 | `guardep-<ver>-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS arm64 (M-series) | `guardep-<ver>-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | not built natively for v0.1.0 (use Rosetta 2 — see §3.2) |
+| Windows x86_64 | `guardep-<ver>-x86_64-pc-windows-msvc.zip` |
+
+Each asset has a sibling `.sha256` file for verification.
+
+### 3.1 macOS arm64 (M1 / M2 / M3 / M4) — Homebrew
 
 ```bash
-git clone https://github.com/roussi/guardep && cd guardep
-cargo build --release
-sudo install -m 0755 target/release/guardep /usr/local/bin/guardep   # optional
+brew tap roussi/tap        # NOT `roussi/guardep`; tap repo is `homebrew-tap`
+brew install guardep
 ```
 
-Crates.io metadata (description, repository, keywords, categories,
-rust-version) is wired in both crate manifests so
-`cargo install guardep-cli` will Just Work as soon as the first
-tagged release ships. A Homebrew formula template lives at
-[`packaging/homebrew/guardep.rb`](./packaging/homebrew/guardep.rb)
-and gets pushed to the tap by the release pipeline; see
-[`packaging/README.md`](./packaging/README.md) for the publish flow.
+The tap (`roussi/homebrew-tap`) is auto-published by the
+`publish-homebrew` job in `.github/workflows/release.yml` on every
+stable `vX.Y.Z` tag.
 
-Multi-OS release tarballs (Linux x86/arm, macOS x86/arm, Windows
-x86) are already built by `.github/workflows/release.yml` on each
-tag; the GitHub Action wrapper (§13.4) downloads them via `gh
-release`.
+### 3.2 macOS Intel — Homebrew via Rosetta 2
 
-### 3.2 Wire it through your shell
+Native `x86_64-apple-darwin` is deferred to a later release because
+GitHub-hosted Intel macOS runners are deprecated and the queue
+stalls for hours. macOS 13+ ships Rosetta 2; guardep is pure Rust
+with no arch-specific syscalls so it runs cleanly under Rosetta.
+
+```bash
+arch -arm64 brew tap roussi/tap
+arch -arm64 brew install --formula guardep
+```
+
+If you'd rather skip Rosetta, see [§3.5](#35-any-platform--build-from-source).
+
+### 3.3 Linux x86_64 / arm64
+
+[Linuxbrew](https://docs.brew.sh/Homebrew-on-Linux) works the same
+way as macOS:
+
+```bash
+brew tap roussi/tap
+brew install guardep
+```
+
+Or grab the tarball directly (no Homebrew dependency):
+
+```bash
+TAG=v0.1.0   # check https://github.com/roussi/guardep/releases/latest
+ARCH=x86_64  # or aarch64
+curl -fL "https://github.com/roussi/guardep/releases/download/${TAG}/guardep-${TAG#v}-${ARCH}-unknown-linux-gnu.tar.gz" \
+  | tar -xz
+sudo install -m 0755 "guardep-${TAG#v}-${ARCH}-unknown-linux-gnu/guardep" /usr/local/bin/guardep
+
+# Optional sha256 verification
+EXPECTED=$(curl -sfL "https://github.com/roussi/guardep/releases/download/${TAG}/guardep-${TAG#v}-${ARCH}-unknown-linux-gnu.tar.gz.sha256" | awk '{print $1}')
+ACTUAL=$(shasum -a 256 "guardep-${TAG#v}-${ARCH}-unknown-linux-gnu.tar.gz" | awk '{print $1}')
+[ "$EXPECTED" = "$ACTUAL" ] && echo "ok" || echo "MISMATCH"
+```
+
+### 3.4 Windows x86_64 — release zip
+
+```powershell
+$tag    = "v0.1.0"   # check https://github.com/roussi/guardep/releases/latest
+$asset  = "guardep-$($tag.TrimStart('v'))-x86_64-pc-windows-msvc.zip"
+Invoke-WebRequest "https://github.com/roussi/guardep/releases/download/$tag/$asset" -OutFile $asset
+Expand-Archive $asset -DestinationPath .
+
+# Move guardep.exe somewhere on your PATH (e.g. ~/bin)
+$dest = "$env:USERPROFILE\bin"
+New-Item -ItemType Directory -Force -Path $dest | Out-Null
+Move-Item ".\guardep-$($tag.TrimStart('v'))-x86_64-pc-windows-msvc\guardep.exe" "$dest\guardep.exe"
+# Add $dest to PATH if it isn't already
+[Environment]::SetEnvironmentVariable("Path", "$([Environment]::GetEnvironmentVariable('Path','User'));$dest", 'User')
+```
+
+Optional sha256 verification:
+
+```powershell
+Invoke-WebRequest "https://github.com/roussi/guardep/releases/download/$tag/$asset.sha256" -OutFile "$asset.sha256"
+$expected = (Get-Content "$asset.sha256").Split(' ')[0]
+$actual   = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+if ($expected -eq $actual) { "ok" } else { "MISMATCH" }
+```
+
+### 3.5 Any platform — build from source
+
+Requires Rust ≥ 1.81 (`rustup toolchain install stable`).
+
+```bash
+# Stable, pinned to a tag (recommended)
+cargo install --git https://github.com/roussi/guardep guardep-cli --tag v0.1.0
+
+# Or HEAD of main
+cargo install --git https://github.com/roussi/guardep guardep-cli
+
+# Or a local clone for hacking on guardep itself
+git clone https://github.com/roussi/guardep && cd guardep
+cargo build --release
+sudo install -m 0755 target/release/guardep /usr/local/bin/guardep
+```
+
+`cargo install` puts the binary at `~/.cargo/bin/guardep`; make
+sure that directory is on your `PATH`.
+
+### 3.6 crates.io
+
+`cargo install guardep-cli` from the public registry will work
+once the first tag is published there (planned for v0.1.x); until
+then use the `--git` form in [§3.5](#35-any-platform--build-from-source).
+Required workspace metadata (description, repository, keywords,
+categories, rust-version) is already wired in both crate manifests.
+
+### 3.7 Verify the install
+
+```bash
+guardep --version    # → guardep 0.1.0
+guardep --help
+guardep audit --path .   # against any project root
+```
+
+### 3.8 Wire it through your shell
 
 `guardep install-shims` symlinks `~/.guardep/bin/{npm,pnpm,yarn,mvn}`
 to the guardep binary and prepends that directory to `PATH`. The

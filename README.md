@@ -41,19 +41,21 @@ the roadmap.
 ## Quick start
 
 ```bash
-git clone https://github.com/roussi/guardep && cd guardep
-cargo build --release
+# macOS arm64 / Linux: one-liner
+brew tap roussi/tap && brew install guardep
 
 # Audit any project
-./target/release/guardep audit --path ~/code/my-frontend
+guardep audit --path ~/code/my-frontend
 
-# Wire npm/pnpm/yarn through guardep system-wide (asks first; reversible)
-./target/release/guardep install-shims
+# Wire npm/pnpm/yarn/mvn through guardep system-wide (asks first; reversible)
+guardep install-shims
 
 # Now every install is gated:
 cd ~/code/my-frontend
 npm install              # blocked if any critical CVE / known malware / suspicious script
 ```
+
+Other platforms (Intel macOS, Windows, build from source) → see [Installation](#installation) below.
 
 Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Backups are restored from `<rc>.guardep.bak`.
 
@@ -97,20 +99,90 @@ Uninstall any time: `guardep uninstall-shims` strips the shims and rc edits. Bac
 
 ## Installation
 
-### From source (recommended until first tagged release)
+Pick the row for your platform.
+
+### macOS arm64 (M1 / M2 / M3 / M4) — Homebrew
 
 ```bash
-git clone https://github.com/roussi/guardep && cd guardep
-cargo build --release
-sudo install -m 0755 target/release/guardep /usr/local/bin/guardep   # optional
+brew tap roussi/tap        # NOT `roussi/guardep`; tap repo is `homebrew-tap`
+brew install guardep
 ```
 
-Crates.io metadata (description, repository, keywords, categories,
-rust-version) is wired in both crate manifests so `cargo install
-guardep-cli` will work as soon as the first tag ships. A Homebrew
-formula template lives in [`packaging/homebrew/guardep.rb`](./packaging/homebrew/guardep.rb)
-and will be pushed to a tap on the same release; see
-[`packaging/README.md`](./packaging/README.md) for the publish flow.
+### macOS Intel — Homebrew via Rosetta 2
+
+The native `x86_64-apple-darwin` binary is deferred to a later
+release because GitHub-hosted Intel macOS runners are deprecated.
+Until then the arm64 binary runs transparently under Rosetta 2
+(macOS 13+ ships Rosetta; guardep is pure Rust with no
+arch-specific syscalls).
+
+```bash
+arch -arm64 brew tap roussi/tap
+arch -arm64 brew install --formula guardep
+```
+
+If you'd rather skip Rosetta, use the [build-from-source](#any-platform--build-from-source) path below.
+
+### Linux x86_64 / Linux arm64 — Homebrew
+
+[Linuxbrew](https://docs.brew.sh/Homebrew-on-Linux) works the same way:
+
+```bash
+brew tap roussi/tap
+brew install guardep
+```
+
+Or grab the tarball directly from the [latest release](https://github.com/roussi/guardep/releases/latest):
+
+```bash
+TAG=v0.1.0   # check https://github.com/roussi/guardep/releases/latest
+ARCH=x86_64  # or aarch64
+curl -L "https://github.com/roussi/guardep/releases/download/${TAG}/guardep-${TAG#v}-${ARCH}-unknown-linux-gnu.tar.gz" | tar -xz
+sudo install -m 0755 "guardep-${TAG#v}-${ARCH}-unknown-linux-gnu/guardep" /usr/local/bin/guardep
+```
+
+### Windows x86_64 — release zip
+
+```powershell
+$tag    = "v0.1.0"   # check https://github.com/roussi/guardep/releases/latest
+$asset  = "guardep-$($tag.TrimStart('v'))-x86_64-pc-windows-msvc.zip"
+Invoke-WebRequest "https://github.com/roussi/guardep/releases/download/$tag/$asset" -OutFile $asset
+Expand-Archive $asset -DestinationPath .
+# Move guardep.exe somewhere on your PATH, e.g.:
+Move-Item ".\guardep-$($tag.TrimStart('v'))-x86_64-pc-windows-msvc\guardep.exe" "$env:USERPROFILE\bin\guardep.exe"
+```
+
+### Any platform — build from source
+
+Requires Rust ≥ 1.81.
+
+```bash
+# Stable, pinned to a tag
+cargo install --git https://github.com/roussi/guardep guardep-cli --tag v0.1.0
+
+# Or HEAD of main
+cargo install --git https://github.com/roussi/guardep guardep-cli
+
+# Or a local clone for hacking
+git clone https://github.com/roussi/guardep && cd guardep
+cargo build --release
+sudo install -m 0755 target/release/guardep /usr/local/bin/guardep
+```
+
+`cargo install` puts the binary at `~/.cargo/bin/guardep`; make sure that is on your PATH.
+
+### Verify the install
+
+```bash
+guardep --version    # → guardep 0.1.0
+guardep --help
+```
+
+### crates.io
+
+`cargo install guardep-cli` from the public registry will work
+once the first tag is published there (planned for v0.1.x). Until
+then use the `--git` form above.
 
 ### Wire it through your shell
 
