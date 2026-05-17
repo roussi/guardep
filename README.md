@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="guardep.png" alt="guardep" width="220">
+</p>
+
 <h1 align="center">guardep</h1>
 
 <p align="center">
@@ -16,7 +20,6 @@
   <a href="https://codecov.io/gh/roussi/guardep"><img alt="Codecov" src="https://codecov.io/gh/roussi/guardep/branch/main/graph/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
   <a href="https://www.rust-lang.org/"><img alt="Built with Rust" src="https://img.shields.io/badge/Built%20with-Rust-orange.svg"></a>
-  <img alt="Status" src="https://img.shields.io/badge/Status-MVP-yellow.svg">
 </p>
 
 ---
@@ -539,7 +542,6 @@ cargo run -- audit --path /path/to/project --collapse
 - [OSV.dev](https://osv.dev/) for the unified advisory database.
 - [GitHub Advisory Database](https://github.com/advisories) for primary reporting.
 - [Sigstore](https://www.sigstore.dev/) and the npm provenance team for making attestation tractable.
-- [Trivy](https://github.com/aquasecurity/trivy), [OSV-Scanner](https://github.com/google/osv-scanner), [Socket](https://socket.dev), and [Phylum](https://phylum.io) for proving the model and pushing the field forward.
 
 ## License
 
