@@ -714,16 +714,6 @@ mod tests {
         }
     }
 
-    fn upg_eco(eco: Ecosystem, name: &str, current: &str, target: &str) -> Upgrade {
-        Upgrade {
-            ecosystem: eco,
-            name: name.into(),
-            current_version: current.into(),
-            target_version: target.into(),
-            clears: "1/1".into(),
-        }
-    }
-
     #[test]
     fn npm_install_all_is_atomic_single_invocation() {
         let cmd =
