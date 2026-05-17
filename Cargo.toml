@@ -45,7 +45,7 @@ swc_ecma_parser = "39"
 swc_ecma_ast = "23"
 swc_common = "21"
 swc_ecma_visit = "23"
-indicatif = "0.17"
+indicatif = "0.18"
 supports-color = "3"
 similar = "3"
 
