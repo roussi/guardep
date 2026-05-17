@@ -39,18 +39,7 @@ pub async fn run(
     let (head_pkgs, head_report) =
         evaluate_project_with_pkgs(head, min_severity, None, granular).await?;
 
-    let base_keys: HashSet<FindingKey> = base_report
-        .deduped()
-        .iter()
-        .map(|s| key_for(&s.finding))
-        .collect();
-
-    let new_findings: Vec<Finding> = head_report
-        .deduped()
-        .iter()
-        .filter(|s| !base_keys.contains(&key_for(&s.finding)))
-        .map(|s| s.finding.clone())
-        .collect();
+    let new_findings = findings_only_in_head(&base_report, &head_report);
 
     // Build a fresh report from just the new findings so the renderer
     // / SBOM emitter can use the same code path as `audit`.
@@ -74,21 +63,14 @@ pub async fn run(
         Format::Sarif => crate::sarif::print_sarif(&new_report)?,
     }
 
-    let exit_code = match fail_on {
-        FailOn::Never => 0,
-        FailOn::Warn if new_report.should_block() => 2,
-        FailOn::Warn if new_report.has_warnings() => 1,
-        FailOn::Warn => 0,
-        FailOn::Block if new_report.should_block() => 2,
-        FailOn::Block => 0,
-    };
+    let exit_code = crate::commands::audit::compute_exit_code(fail_on, &new_report);
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
     Ok(())
 }
 
-#[derive(Hash, Eq, PartialEq, Clone)]
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
 struct FindingKey {
     pkg: String,
     version: String,
@@ -105,5 +87,193 @@ fn key_for(f: &Finding) -> FindingKey {
     }
 }
 
+/// Return the deduped findings present in `head` but not in `base`.
+/// Pulled out of `run` so the diff semantics are testable without
+/// running the evaluator pipeline twice. Identity is the `FindingKey`
+/// tuple `(pkg, version, kind, id)`.
+fn findings_only_in_head(base: &FindingsReport, head: &FindingsReport) -> Vec<Finding> {
+    let base_keys: HashSet<FindingKey> =
+        base.deduped().iter().map(|s| key_for(&s.finding)).collect();
+    head.deduped()
+        .iter()
+        .filter(|s| !base_keys.contains(&key_for(&s.finding)))
+        .map(|s| s.finding.clone())
+        .collect()
+}
+
 #[allow(dead_code)]
 fn unused_marker(_pkgs: &[PackageRef]) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use guardep_core::{
+        ecosystem::{Ecosystem, PackageRef as Pkg},
+        finding::FindingKind,
+    };
+
+    fn finding(name: &str, version: &str, kind: FindingKind, id: &str) -> Finding {
+        Finding {
+            package: Pkg::new(Ecosystem::Npm, name, version),
+            kind,
+            id: id.into(),
+            aliases: vec![],
+            summary: String::new(),
+            severity: FindingSeverity::Medium,
+            fixed_versions: vec![],
+            references: vec![],
+            details: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn key_distinguishes_by_package_name() {
+        let a = key_for(&finding(
+            "lodash",
+            "4.17.20",
+            FindingKind::Vulnerability,
+            "GHSA-1",
+        ));
+        let b = key_for(&finding(
+            "axios",
+            "4.17.20",
+            FindingKind::Vulnerability,
+            "GHSA-1",
+        ));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn key_distinguishes_by_version() {
+        let a = key_for(&finding(
+            "lodash",
+            "4.17.20",
+            FindingKind::Vulnerability,
+            "GHSA-1",
+        ));
+        let b = key_for(&finding(
+            "lodash",
+            "4.17.21",
+            FindingKind::Vulnerability,
+            "GHSA-1",
+        ));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn key_distinguishes_by_kind() {
+        let a = key_for(&finding(
+            "lodash",
+            "4.17.20",
+            FindingKind::Vulnerability,
+            "X",
+        ));
+        let b = key_for(&finding("lodash", "4.17.20", FindingKind::Malware, "X"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn key_distinguishes_by_id() {
+        let a = key_for(&finding(
+            "lodash",
+            "4.17.20",
+            FindingKind::Vulnerability,
+            "GHSA-1",
+        ));
+        let b = key_for(&finding(
+            "lodash",
+            "4.17.20",
+            FindingKind::Vulnerability,
+            "GHSA-2",
+        ));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn key_is_equal_for_identical_inputs() {
+        let a = key_for(&finding(
+            "lodash",
+            "4.17.20",
+            FindingKind::Vulnerability,
+            "GHSA-1",
+        ));
+        let b = key_for(&finding(
+            "lodash",
+            "4.17.20",
+            FindingKind::Vulnerability,
+            "GHSA-1",
+        ));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn key_works_as_hashset_member() {
+        // Round-trip through a HashSet to confirm hash + eq agree;
+        // this is exactly how `run` filters base findings out of head.
+        let f = finding("lodash", "4.17.20", FindingKind::Vulnerability, "GHSA-1");
+        let mut set: HashSet<FindingKey> = HashSet::new();
+        set.insert(key_for(&f));
+        assert!(set.contains(&key_for(&f)));
+
+        let other = finding("axios", "1.0.0", FindingKind::Vulnerability, "GHSA-9");
+        assert!(!set.contains(&key_for(&other)));
+    }
+
+    fn report_of(findings: Vec<Finding>) -> FindingsReport {
+        let policy = guardep_core::policy::Policy::default();
+        FindingsReport::from_findings(findings, &policy)
+    }
+
+    #[test]
+    fn diff_returns_empty_when_base_and_head_match() {
+        let f = finding("lodash", "4.17.20", FindingKind::Vulnerability, "GHSA-1");
+        let base = report_of(vec![f.clone()]);
+        let head = report_of(vec![f]);
+        assert!(findings_only_in_head(&base, &head).is_empty());
+    }
+
+    #[test]
+    fn diff_surfaces_new_findings_added_in_head() {
+        let shared = finding("lodash", "4.17.20", FindingKind::Vulnerability, "GHSA-1");
+        let added = finding("axios", "1.0.0", FindingKind::Vulnerability, "GHSA-9");
+
+        let base = report_of(vec![shared.clone()]);
+        let head = report_of(vec![shared, added.clone()]);
+
+        let new = findings_only_in_head(&base, &head);
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0].id, added.id);
+    }
+
+    #[test]
+    fn diff_treats_version_bump_as_new() {
+        let v1 = finding("lodash", "4.17.20", FindingKind::Vulnerability, "GHSA-1");
+        let v2 = finding("lodash", "4.17.21", FindingKind::Vulnerability, "GHSA-1");
+        let base = report_of(vec![v1]);
+        let head = report_of(vec![v2.clone()]);
+
+        let new = findings_only_in_head(&base, &head);
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0].package.version, "4.17.21");
+    }
+
+    #[test]
+    fn diff_drops_findings_removed_in_head() {
+        // A finding that base has but head doesn't is not "new" — diff
+        // is one-sided. (Removed findings would surface in a reverse
+        // diff; here they should be silently dropped.)
+        let removed = finding("lodash", "4.17.20", FindingKind::Vulnerability, "GHSA-1");
+        let base = report_of(vec![removed]);
+        let head = report_of(vec![]);
+        assert!(findings_only_in_head(&base, &head).is_empty());
+    }
+
+    #[test]
+    fn diff_against_empty_base_returns_all_head_findings() {
+        let a = finding("axios", "1.0.0", FindingKind::Vulnerability, "GHSA-9");
+        let b = finding("lodash", "4.17.20", FindingKind::Vulnerability, "GHSA-1");
+        let base = report_of(vec![]);
+        let head = report_of(vec![a, b]);
+        assert_eq!(findings_only_in_head(&base, &head).len(), 2);
+    }
+}

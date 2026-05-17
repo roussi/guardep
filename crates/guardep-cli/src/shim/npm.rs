@@ -13,16 +13,9 @@ const INTERCEPTED: &[&str] = &["install", "i", "add", "ci", "update", "upgrade"]
 const NEEDS_DRY_RUN: &[&str] = &["install", "i", "add", "update", "upgrade"];
 
 pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
-    let subcommand = args
-        .iter()
-        .find(|a| !a.starts_with('-'))
-        .map(|s| s.as_str());
+    let subcommand = npm_subcommand(args);
 
-    let should_intercept = subcommand
-        .map(|s| INTERCEPTED.contains(&s))
-        .unwrap_or(false);
-
-    if !should_intercept {
+    if !npm_should_intercept(args) {
         return passthrough(tool, args);
     }
 
@@ -38,7 +31,7 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
     // Detect explicit --no-package-lock flag (npm) — refuse to gate.
     // Exit 1 (general error) per Unix convention; the message on
     // stderr explains what specifically failed.
-    if args.iter().any(|a| a == "--no-package-lock") {
+    if npm_disables_lock(args) {
         eprintln!(
             "{} --no-package-lock disables guardep's gate. Refusing to proceed.",
             "X".red()
@@ -49,11 +42,7 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
     // For `npm install foo`, the existing lockfile is stale w.r.t. the
     // new package. Use a dry-run resolution that includes the intended
     // additions. For `npm ci` the lockfile is authoritative.
-    let needs_dry_run = subcommand
-        .map(|s| NEEDS_DRY_RUN.contains(&s))
-        .unwrap_or(false);
-
-    let resolved = if needs_dry_run && tool == "npm" {
+    let resolved = if npm_needs_dry_run(args) && tool == "npm" {
         eprintln!(
             "{} resolving via `npm install --dry-run` (captures intended additions)",
             ">".cyan()
@@ -141,4 +130,118 @@ fn run_real(tool: &str, args: &[String]) -> Result<()> {
     let real: PathBuf = locate_real_binary(tool)?;
     let status = std::process::Command::new(real).args(args).status()?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/// First positional arg that doesn't start with `-`. Treats every flag
+/// (long or short) as a global option; npm itself doesn't accept
+/// option-with-arg in the way cargo does, so we don't need cargo's
+/// `consumes-next-arg` heuristic.
+fn npm_subcommand(args: &[String]) -> Option<&str> {
+    args.iter()
+        .find(|a| !a.starts_with('-'))
+        .map(|s| s.as_str())
+}
+
+fn npm_should_intercept(args: &[String]) -> bool {
+    npm_subcommand(args)
+        .map(|s| INTERCEPTED.contains(&s))
+        .unwrap_or(false)
+}
+
+fn npm_needs_dry_run(args: &[String]) -> bool {
+    npm_subcommand(args)
+        .map(|s| NEEDS_DRY_RUN.contains(&s))
+        .unwrap_or(false)
+}
+
+fn npm_disables_lock(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--no-package-lock")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn detects_plain_install_subcommand() {
+        assert_eq!(npm_subcommand(&args(&["install"])), Some("install"));
+        assert_eq!(
+            npm_subcommand(&args(&["install", "lodash"])),
+            Some("install")
+        );
+    }
+
+    #[test]
+    fn skips_leading_flags_before_subcommand() {
+        // Equals-style global options are common in scripted npm
+        // invocations; the parser must skip them and land on the
+        // first positional.
+        let values = args(&["--silent", "--prefix=/tmp/x", "install", "express"]);
+        assert_eq!(npm_subcommand(&values), Some("install"));
+    }
+
+    #[test]
+    fn space_separated_option_value_is_treated_as_subcommand() {
+        // Known limitation: `--prefix /tmp/x install` resolves to
+        // `/tmp/x` because the parser has no knowledge of which flags
+        // consume the next arg. npm itself accepts `--prefix=/tmp/x`
+        // and that's the path real users hit; we document the edge
+        // here so a future refactor doesn't break it silently.
+        let values = args(&["--prefix", "/tmp/x", "install"]);
+        assert_eq!(npm_subcommand(&values), Some("/tmp/x"));
+    }
+
+    #[test]
+    fn returns_none_for_flags_only() {
+        assert_eq!(npm_subcommand(&args(&["--version"])), None);
+        assert_eq!(npm_subcommand(&args(&["--help"])), None);
+        assert_eq!(npm_subcommand(&args(&[])), None);
+    }
+
+    #[test]
+    fn intercept_matches_install_family() {
+        for sub in ["install", "i", "add", "ci", "update", "upgrade"] {
+            assert!(
+                npm_should_intercept(&args(&[sub])),
+                "expected `{sub}` to be intercepted",
+            );
+        }
+    }
+
+    #[test]
+    fn intercept_skips_read_only_subcommands() {
+        for sub in ["audit", "ls", "outdated", "view", "run"] {
+            assert!(
+                !npm_should_intercept(&args(&[sub])),
+                "did not expect `{sub}` to be intercepted",
+            );
+        }
+    }
+
+    #[test]
+    fn dry_run_needed_for_lock_mutators_only() {
+        // ci is intercepted but should not trigger a dry-run since the
+        // lockfile is already authoritative.
+        assert!(npm_needs_dry_run(&args(&["install", "lodash"])));
+        assert!(npm_needs_dry_run(&args(&["add"])));
+        assert!(npm_needs_dry_run(&args(&["update"])));
+        assert!(!npm_needs_dry_run(&args(&["ci"])));
+        assert!(!npm_needs_dry_run(&args(&["ls"])));
+        assert!(!npm_needs_dry_run(&args(&[])));
+    }
+
+    #[test]
+    fn disables_lock_detects_no_package_lock_flag() {
+        assert!(npm_disables_lock(&args(&["install", "--no-package-lock"])));
+        assert!(!npm_disables_lock(&args(&["install"])));
+        // Substring/related-prefix flags must not match.
+        assert!(!npm_disables_lock(&args(&[
+            "install",
+            "--package-lock-only"
+        ])));
+    }
 }

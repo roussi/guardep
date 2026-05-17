@@ -897,4 +897,138 @@ mod tests {
         assert_eq!(plan.upgrades.len(), 2);
         assert!(plan.breaking.is_empty());
     }
+
+    #[test]
+    fn kind_label_covers_every_finding_kind() {
+        // Pin the label-mapping so renderer output doesn't drift
+        // silently when a new FindingKind variant is added.
+        assert_eq!(
+            kind_label(FindingKind::PostinstallScript),
+            "postinstall script"
+        );
+        assert_eq!(kind_label(FindingKind::RiskScore), "risk score");
+        assert_eq!(
+            kind_label(FindingKind::MissingProvenance),
+            "missing provenance"
+        );
+        assert_eq!(
+            kind_label(FindingKind::ProvenanceMismatch),
+            "provenance mismatch"
+        );
+        assert_eq!(kind_label(FindingKind::Malware), "advisory");
+        assert_eq!(kind_label(FindingKind::Vulnerability), "advisory");
+        assert_eq!(kind_label(FindingKind::SourceBehavior), "source behavior");
+        assert_eq!(kind_label(FindingKind::License), "license");
+    }
+
+    #[test]
+    fn for_upgrade_picks_pnpm_when_pnpm_lock_present() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("pnpm-lock.yaml"), b"").unwrap();
+        let upg = upg_eco(Ecosystem::Npm, "axios", "1.0.0", "1.0.5");
+        assert_eq!(
+            PackageManager::for_upgrade(&upg, dir.path()),
+            PackageManager::Pnpm
+        );
+    }
+
+    #[test]
+    fn for_upgrade_picks_yarn_when_yarn_lock_present() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("yarn.lock"), b"").unwrap();
+        let upg = upg_eco(Ecosystem::Npm, "axios", "1.0.0", "1.0.5");
+        assert_eq!(
+            PackageManager::for_upgrade(&upg, dir.path()),
+            PackageManager::Yarn
+        );
+    }
+
+    #[test]
+    fn for_upgrade_npm_defaults_to_npm() {
+        // No pnpm/yarn lockfile in cwd; default falls through to npm
+        // regardless of whether package-lock.json is present.
+        let dir = tempfile::TempDir::new().unwrap();
+        let upg = upg_eco(Ecosystem::Npm, "axios", "1.0.0", "1.0.5");
+        assert_eq!(
+            PackageManager::for_upgrade(&upg, dir.path()),
+            PackageManager::Npm
+        );
+        std::fs::write(dir.path().join("package-lock.json"), b"").unwrap();
+        assert_eq!(
+            PackageManager::for_upgrade(&upg, dir.path()),
+            PackageManager::Npm
+        );
+    }
+
+    #[test]
+    fn for_upgrade_pnpm_beats_yarn_when_both_lockfiles_present() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("pnpm-lock.yaml"), b"").unwrap();
+        std::fs::write(dir.path().join("yarn.lock"), b"").unwrap();
+        let upg = upg_eco(Ecosystem::Npm, "axios", "1.0.0", "1.0.5");
+        assert_eq!(
+            PackageManager::for_upgrade(&upg, dir.path()),
+            PackageManager::Pnpm
+        );
+    }
+
+    #[test]
+    fn for_upgrade_cargo_maps_to_cargo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let upg = upg_eco(Ecosystem::Cargo, "tough", "0.21.0", "0.22.0");
+        assert_eq!(
+            PackageManager::for_upgrade(&upg, dir.path()),
+            PackageManager::Cargo
+        );
+    }
+
+    #[test]
+    fn print_plan_with_empty_plan_does_not_panic() {
+        // Empty plan: should print "no in-major upgrades available"
+        // without touching the breaking or manual buckets.
+        let plan = Plan {
+            upgrades: vec![],
+            manual: vec![],
+            breaking: vec![],
+        };
+        print_plan(&plan, FixTarget::Safe);
+        print_plan(&plan, FixTarget::Min);
+    }
+
+    #[test]
+    fn print_plan_with_breaking_and_manual_does_not_panic() {
+        let plan = Plan {
+            upgrades: vec![Upgrade {
+                ecosystem: Ecosystem::Npm,
+                name: "axios".into(),
+                current_version: "1.0.0".into(),
+                target_version: "1.0.5".into(),
+                clears: "1/1".into(),
+                note: None,
+            }],
+            manual: vec![
+                ManualItem {
+                    name: "evil".into(),
+                    version: "1.0.0".into(),
+                    kind: FindingKind::PostinstallScript,
+                    summary: "exfil".into(),
+                },
+                ManualItem {
+                    name: "risky".into(),
+                    version: "2.0.0".into(),
+                    kind: FindingKind::RiskScore,
+                    summary: "fresh publish".into(),
+                },
+            ],
+            breaking: vec![Upgrade {
+                ecosystem: Ecosystem::Npm,
+                name: "tar".into(),
+                current_version: "6.2.1".into(),
+                target_version: "7.5.4".into(),
+                clears: "1/1".into(),
+                note: None,
+            }],
+        };
+        print_plan(&plan, FixTarget::Safe);
+    }
 }
