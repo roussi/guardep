@@ -156,6 +156,94 @@ jobs:
             guardep-*.zip.pem
           if-no-files-found: error
 
+      # Per-target hash line for the SLSA aggregate. The shape is
+      # `<sha256>  <filename>` (two spaces), matching `sha256sum`,
+      # which is what `slsa-github-generator` expects to decode.
+      - name: Emit hash line (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        id: hash_tar
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          FILE="guardep-${VERSION}-${TARGET}.tar.gz"
+          LINE="$(shasum -a 256 "$FILE")"
+          {
+            echo "line<<HASH_EOF"
+            echo "$LINE"
+            echo "HASH_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Emit hash line (zip)
+        if: matrix.archive == 'zip'
+        id: hash_zip
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          FILE="guardep-${VERSION}-${TARGET}.zip"
+          LINE="$(shasum -a 256 "$FILE")"
+          {
+            echo "line<<HASH_EOF"
+            echo "$LINE"
+            echo "HASH_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Persist hash artifact
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          LINE_TAR: ${{ steps.hash_tar.outputs.line }}
+          LINE_ZIP: ${{ steps.hash_zip.outputs.line }}
+        run: |
+          set -euo pipefail
+          mkdir -p hashes
+          # Exactly one of the two is non-empty per matrix job.
+          { echo "$LINE_TAR"; echo "$LINE_ZIP"; } | sed '/^$/d' > "hashes/${TARGET}.sha256"
+
+      - name: Upload hash artifact
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: hash-${{ matrix.target }}
+          path: hashes/${{ matrix.target }}.sha256
+          if-no-files-found: error
+
+  # Combine the five per-target hash lines into one base64 blob
+  # consumable by the SLSA generator reusable workflow below.
+  aggregate-hashes:
+    name: aggregate hashes
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      hashes: ${{ steps.combine.outputs.hashes }}
+    steps:
+      - name: Download per-target hashes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: hashes
+          pattern: hash-*
+          merge-multiple: true
+
+      - name: Combine into base64 blob
+        id: combine
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Concatenate `<sha256>  <file>` lines into one document and
+          # base64 it. The generator decodes back to a multi-subject
+          # SLSA statement, one subject per artifact.
+          cat hashes/*.sha256 > all.sha256
+          B64="$(base64 -w0 all.sha256)"
+          echo "hashes=${B64}" >> "$GITHUB_OUTPUT"
+
   publish:
     name: publish github release
     needs: build
@@ -165,10 +253,11 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Download all artifacts
+      - name: Download release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
+          pattern: guardep-*
           merge-multiple: true
 
       - name: Render install snippet
@@ -233,6 +322,32 @@ jobs:
           append_body: true
           body: ${{ steps.install_snippet.outputs.body }}
           fail_on_unmatched_files: true
+
+  # SLSA Build Level 3 provenance. Calls the reusable workflow from
+  # slsa-framework/slsa-github-generator, which runs in its own
+  # isolated reusable-workflow context so the calling job cannot
+  # tamper with the attestation. The generator signs an in-toto
+  # SLSA v1.0 statement with cosign keyless (Fulcio + Rekor),
+  # decodes our base64-encoded `sha256sum` document into one
+  # `subject` per artifact, and attaches `*.intoto.jsonl` to the
+  # GitHub Release.
+  #
+  # Reusable workflows MUST be referenced by a tag (not a SHA);
+  # the generator pins itself against the tag and refuses unknown
+  # references. v2.1.0 sha: f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
+  provenance:
+    name: slsa provenance
+    needs: [aggregate-hashes, publish]
+    permissions:
+      actions: read       # detect workflow inputs
+      id-token: write     # mint OIDC token for Fulcio
+      contents: write     # attach .intoto.jsonl to the release
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.aggregate-hashes.outputs.hashes }}
+      provenance-name: guardep-${{ github.ref_name }}.intoto.jsonl
+      upload-assets: true
+      upload-tag-name: ${{ github.ref_name }}
 
   publish-homebrew:
     name: publish homebrew formula
