@@ -12,6 +12,7 @@
   <a href="https://github.com/roussi/guardep/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/roussi/guardep/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/roussi/guardep/actions/workflows/audit.yml"><img alt="Audit" src="https://github.com/roussi/guardep/actions/workflows/audit.yml/badge.svg"></a>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/roussi/guardep"><img alt="OpenSSF Scorecard" src="https://api.securityscorecards.dev/projects/github.com/roussi/guardep/badge"></a>
+  <a href="https://www.bestpractices.dev/projects/12867"><img alt="OpenSSF Best Practices" src="https://www.bestpractices.dev/projects/12867/badge"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
   <a href="https://www.rust-lang.org/"><img alt="Built with Rust" src="https://img.shields.io/badge/Built%20with-Rust-orange.svg"></a>
   <img alt="Status" src="https://img.shields.io/badge/Status-MVP-yellow.svg">
