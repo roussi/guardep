@@ -7,11 +7,13 @@ on:
     paths:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
+      - "audit.toml"
       - ".github/workflows/audit.yml"
   pull_request:
     paths:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
+      - "audit.toml"
 
 permissions:
   contents: read
@@ -32,3 +34,10 @@ jobs:
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # Same advisories documented in audit.toml at repo root.
+          # rustsec/audit-check@v2 does NOT auto-read audit.toml; the
+          # ignores have to be passed here verbatim. Keep both in sync.
+          ignore: |
+            RUSTSEC-2023-0071
+            RUSTSEC-2025-0119
+            RUSTSEC-2024-0370

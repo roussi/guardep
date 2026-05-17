@@ -1,0 +1,30 @@
+# cargo-audit configuration.
+# Each ignore here is paired with a written rationale so anyone
+# auditing the audit knows exactly why an advisory is allowed.
+#
+# Re-evaluate every release. If sigstore-rs or indicatif moves off
+# the affected crate, drop the corresponding entry from this file.
+
+[advisories]
+ignore = [
+    # rsa@0.9.10 Marvin Attack — timing side-channel in RSA-PKCS#1 v1.5
+    # decryption. Pulled in transitively via sigstore -> openidconnect.
+    # No upstream fix exists yet (tracked in RustCrypto/RSA#19). guardep
+    # itself does NOT perform RSA decryption; the path is only reached
+    # if a user enables sigstore provenance with an OIDC issuer that
+    # advertises RSA keys, which our default Fulcio config does not.
+    # Revisit on every sigstore-rs bump.
+    "RUSTSEC-2023-0071",
+
+    # number_prefix@0.4.0 unmaintained (warning). Pulled in via
+    # indicatif progress bars. Pure formatting code, no security
+    # impact. Will resolve once indicatif moves to a maintained
+    # alternative or vendors the formatter.
+    "RUSTSEC-2025-0119",
+
+    # proc-macro-error@1.0.4 unmaintained (warning). Pulled in via
+    # locspan-derive -> json-syntax -> sigstore. Build-time only,
+    # zero runtime impact. Replaced by proc-macro-error2 upstream;
+    # waiting for sigstore-rs to update.
+    "RUSTSEC-2024-0370",
+]
