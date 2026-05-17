@@ -15,6 +15,7 @@
 //! knows they still need attention.
 
 use anyhow::Result;
+use guardep_core::ecosystem::Ecosystem;
 use guardep_core::{FindingKind, FindingSeverity, FindingsReport, ScoredFinding};
 use owo_colors::OwoColorize;
 use std::collections::BTreeMap;
@@ -32,42 +33,91 @@ pub enum FixTarget {
     Safe,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum PackageManager {
     Npm,
     Pnpm,
     Yarn,
+    Cargo,
+    Maven,
 }
 
 impl PackageManager {
-    fn detect(project_root: &Path) -> Self {
-        if project_root.join("pnpm-lock.yaml").exists() {
-            Self::Pnpm
-        } else if project_root.join("yarn.lock").exists() {
-            Self::Yarn
-        } else {
-            Self::Npm
+    /// Detect the package manager that owns the upgrade. Order matters:
+    /// for an Npm upgrade we prefer pnpm > yarn > npm based on which
+    /// lockfile is present. Cargo/Maven map 1:1 to their ecosystem.
+    /// PyPI maps to Maven's manual-only path for now — there's no pip
+    /// resolver in guardep yet, but if a finding ever leaks into the
+    /// fix planner we'd rather print "manual review" than spawn the
+    /// wrong tool.
+    fn for_upgrade(upg: &Upgrade, project_root: &Path) -> Self {
+        match upg.ecosystem {
+            Ecosystem::Cargo => Self::Cargo,
+            Ecosystem::Maven | Ecosystem::PyPI => Self::Maven,
+            Ecosystem::Npm => {
+                if project_root.join("pnpm-lock.yaml").exists() {
+                    Self::Pnpm
+                } else if project_root.join("yarn.lock").exists() {
+                    Self::Yarn
+                } else {
+                    Self::Npm
+                }
+            }
         }
     }
 
+    /// True iff `guardep fix --apply` can drive this PM end-to-end.
+    /// Cargo: yes (`cargo update -p X --precise V`). Maven: no — there's
+    /// no surgical "bump this transitive" CLI; users must add an
+    /// explicit override. Returning false here makes apply skip the
+    /// group and print manual guidance instead of running a wrong cmd.
+    fn supports_apply(self) -> bool {
+        !matches!(self, Self::Maven)
+    }
+
     /// Build a single install command that applies every upgrade in
-    /// one transaction. npm/pnpm/yarn all support multiple specs in
-    /// one invocation. Either all bumps land or the package manager
-    /// fails atomically — no half-applied state, no divergent
-    /// lockfile.
+    /// the group in one transaction. npm/pnpm/yarn/cargo all accept
+    /// multiple specs in one invocation. Either all bumps land or the
+    /// package manager fails atomically — no half-applied state, no
+    /// divergent lockfile.
     fn install_all_cmd(self, upgrades: &[Upgrade]) -> Vec<String> {
-        let specs: Vec<String> = upgrades
-            .iter()
-            .map(|u| format!("{}@^{}", u.name, u.target_version))
-            .collect();
-        let (bin, sub) = match self {
-            Self::Npm => ("npm", "install"),
-            Self::Pnpm => ("pnpm", "add"),
-            Self::Yarn => ("yarn", "add"),
-        };
-        let mut cmd = vec![bin.to_string(), sub.to_string()];
-        cmd.extend(specs);
-        cmd
+        match self {
+            Self::Npm | Self::Pnpm | Self::Yarn => {
+                let specs: Vec<String> = upgrades
+                    .iter()
+                    .map(|u| format!("{}@^{}", u.name, u.target_version))
+                    .collect();
+                let (bin, sub) = match self {
+                    Self::Npm => ("npm", "install"),
+                    Self::Pnpm => ("pnpm", "add"),
+                    Self::Yarn => ("yarn", "add"),
+                    _ => unreachable!(),
+                };
+                let mut cmd = vec![bin.to_string(), sub.to_string()];
+                cmd.extend(specs);
+                cmd
+            }
+            Self::Cargo => {
+                // `cargo update --package X --precise V` pins exactly
+                // one transitive in the lockfile without touching
+                // Cargo.toml. Multiple `-p X --precise V` pairs work
+                // in one invocation and resolve atomically.
+                let mut cmd = vec!["cargo".to_string(), "update".to_string()];
+                for u in upgrades {
+                    cmd.push("--package".into());
+                    cmd.push(u.name.clone());
+                    cmd.push("--precise".into());
+                    cmd.push(u.target_version.clone());
+                }
+                cmd
+            }
+            Self::Maven => {
+                // Not invokable — gated by `supports_apply()`. Returned
+                // so callers that misuse this path get a clear panic in
+                // debug rather than silently spawning an empty cmd.
+                vec!["mvn".into(), "--unsupported".into()]
+            }
+        }
     }
 }
 
@@ -85,27 +135,66 @@ pub async fn run(path: &Path, target: FixTarget, apply: bool, yes: bool) -> Resu
             eprintln!("{} nothing to apply.", "i".cyan());
             return Ok(());
         }
-        let pm = PackageManager::detect(path);
-        if !yes {
+        // Group upgrades by their target package manager. A single
+        // project can only realistically yield one PM today (a Cargo
+        // project's findings are all Ecosystem::Cargo) but the
+        // grouping keeps the contract honest: each PM gets exactly
+        // one atomic invocation, in a stable order.
+        let mut by_pm: BTreeMap<PackageManager, Vec<Upgrade>> = BTreeMap::new();
+        for u in &plan.upgrades {
+            by_pm
+                .entry(PackageManager::for_upgrade(u, path))
+                .or_default()
+                .push(u.clone());
+        }
+
+        // Show the npm-style manifest diff only when we're about to
+        // touch package.json. Cargo apply only edits Cargo.lock.
+        if !yes && by_pm.contains_key(&PackageManager::Npm) {
             print_manifest_diff(path, &plan.upgrades);
         }
-        // Confirmation: --apply without --yes asks before mutating
-        // package.json + lockfile. CI users opt out via --yes.
-        if !yes && !confirm(plan.upgrades.len(), pm)? {
+
+        // Confirmation: --apply without --yes asks before any mutation.
+        // CI users opt out via --yes.
+        if !yes && !confirm_multi(&by_pm)? {
             eprintln!("{} aborted by user.", "i".cyan());
             return Ok(());
         }
-        eprintln!(
-            "\n{} applying {} upgrade(s) atomically via {:?}",
-            ">".cyan(),
-            plan.upgrades.len(),
-            pm
-        );
-        // Single invocation for all upgrades. Either every spec lands
-        // or the package manager fails atomically and the lockfile is
-        // unchanged. No half-applied state to recover from.
-        let cmd = pm.install_all_cmd(&plan.upgrades);
-        run_command(path, &cmd)?;
+
+        for (pm, upgrades) in &by_pm {
+            if !pm.supports_apply() {
+                eprintln!(
+                    "\n{} {} upgrade(s) need manual review for {:?} — \
+                     no surgical bump CLI exists",
+                    "!".yellow(),
+                    upgrades.len(),
+                    pm
+                );
+                for u in upgrades {
+                    eprintln!(
+                        "  {} {} -> {}  (add an explicit override in pom.xml \
+                         <dependencyManagement>, or run `mvn versions:use-dep-version \
+                         -Dincludes={}` if you have versions-maven-plugin configured)",
+                        u.name.bold(),
+                        u.current_version.dimmed(),
+                        u.target_version.green(),
+                        u.name,
+                    );
+                }
+                continue;
+            }
+            eprintln!(
+                "\n{} applying {} upgrade(s) atomically via {:?}",
+                ">".cyan(),
+                upgrades.len(),
+                pm
+            );
+            // Single invocation per PM. Either every spec lands or the
+            // package manager fails atomically and the lockfile is
+            // unchanged. No half-applied state to recover from.
+            let cmd = pm.install_all_cmd(upgrades);
+            run_command(path, &cmd)?;
+        }
         eprintln!("\n{} done.", "OK".green().bold());
     } else if !plan.upgrades.is_empty() {
         eprintln!(
@@ -176,13 +265,16 @@ fn project_manifest(original: &str, upgrades: &[Upgrade]) -> String {
     out
 }
 
-fn confirm(upgrade_count: usize, pm: PackageManager) -> Result<bool> {
+fn confirm_multi(by_pm: &BTreeMap<PackageManager, Vec<Upgrade>>) -> Result<bool> {
     use std::io::{self, BufRead, Write};
+    let summary: Vec<String> = by_pm
+        .iter()
+        .map(|(pm, ups)| format!("{} via {:?}", ups.len(), pm))
+        .collect();
     eprint!(
-        "\n{} apply {} upgrade(s) via {:?}? This will modify package.json + lockfile. [y/N] ",
+        "\n{} apply {}? This will modify lockfile(s) (and package.json for npm/pnpm/yarn). [y/N] ",
         "?".yellow().bold(),
-        upgrade_count,
-        pm
+        summary.join(" + "),
     );
     io::stderr().flush().ok();
     let mut line = String::new();
@@ -205,6 +297,7 @@ pub struct Plan {
 
 #[derive(Debug, Clone)]
 pub struct Upgrade {
+    pub ecosystem: Ecosystem,
     pub name: String,
     pub current_version: String,
     pub target_version: String,
@@ -221,7 +314,11 @@ pub struct ManualItem {
 }
 
 fn build_plan(report: &FindingsReport, target: FixTarget) -> Plan {
-    let mut by_package: BTreeMap<(String, String), Vec<&ScoredFinding>> = BTreeMap::new();
+    // Key is (ecosystem, name, version) so a Cargo `foo` never merges
+    // with an Npm `foo` — they have separate fix targets and separate
+    // package managers driving the apply.
+    let mut by_package: BTreeMap<(Ecosystem, String, String), Vec<&ScoredFinding>> =
+        BTreeMap::new();
     let mut manual: Vec<ManualItem> = Vec::new();
 
     for s in &report.items {
@@ -233,6 +330,7 @@ fn build_plan(report: &FindingsReport, target: FixTarget) -> Plan {
             FindingKind::Vulnerability | FindingKind::Malware => {
                 by_package
                     .entry((
+                        s.finding.package.ecosystem,
                         s.finding.package.name.clone(),
                         s.finding.package.version.clone(),
                     ))
@@ -259,7 +357,7 @@ fn build_plan(report: &FindingsReport, target: FixTarget) -> Plan {
     let mut upgrades: Vec<Upgrade> = Vec::new();
     let mut breaking: Vec<Upgrade> = Vec::new();
 
-    for ((name, current), items) in by_package {
+    for ((ecosystem, name, current), items) in by_package {
         let targets = fix_targets(&items);
         let chosen = match target {
             FixTarget::Min => targets.min.clone(),
@@ -269,6 +367,7 @@ fn build_plan(report: &FindingsReport, target: FixTarget) -> Plan {
             // No in-major fix available; check for cross-major fallback.
             if let Some(v) = targets.cross_major_fallback.clone() {
                 breaking.push(Upgrade {
+                    ecosystem,
                     name,
                     current_version: current,
                     target_version: v,
@@ -282,6 +381,7 @@ fn build_plan(report: &FindingsReport, target: FixTarget) -> Plan {
             FixTarget::Safe => format!("{}/{}", targets.total, targets.total),
         };
         let upg = Upgrade {
+            ecosystem,
             name,
             current_version: current,
             target_version,
@@ -464,9 +564,20 @@ mod tests {
 
     fn upg(name: &str, version: &str) -> Upgrade {
         Upgrade {
+            ecosystem: Ecosystem::Npm,
             name: name.into(),
             current_version: "0.0.0".into(),
             target_version: version.into(),
+            clears: "1/1".into(),
+        }
+    }
+
+    fn upg_eco(eco: Ecosystem, name: &str, current: &str, target: &str) -> Upgrade {
+        Upgrade {
+            ecosystem: eco,
+            name: name.into(),
+            current_version: current.into(),
+            target_version: target.into(),
             clears: "1/1".into(),
         }
     }
@@ -495,8 +606,66 @@ mod tests {
         // verifies the function doesn't panic.
     }
 
+    #[test]
+    fn cargo_apply_uses_update_precise_per_package() {
+        let cmd = PackageManager::Cargo.install_all_cmd(&[
+            upg_eco(Ecosystem::Cargo, "tough", "0.21.0", "0.22.0"),
+            upg_eco(Ecosystem::Cargo, "rsa", "0.9.10", "0.9.11"),
+        ]);
+        assert_eq!(
+            cmd,
+            vec![
+                "cargo",
+                "update",
+                "--package",
+                "tough",
+                "--precise",
+                "0.22.0",
+                "--package",
+                "rsa",
+                "--precise",
+                "0.9.11",
+            ]
+        );
+    }
+
+    #[test]
+    fn cargo_upgrade_routes_to_cargo_pm() {
+        let upg = upg_eco(Ecosystem::Cargo, "tough", "0.21.0", "0.22.0");
+        let pm = PackageManager::for_upgrade(&upg, std::path::Path::new("/tmp/does-not-exist"));
+        assert_eq!(pm, PackageManager::Cargo);
+    }
+
+    #[test]
+    fn maven_upgrade_routes_to_maven_pm_and_is_not_appliable() {
+        let upg = upg_eco(
+            Ecosystem::Maven,
+            "org.apache.commons:commons-text",
+            "1.9",
+            "1.10.0",
+        );
+        let pm = PackageManager::for_upgrade(&upg, std::path::Path::new("/tmp/does-not-exist"));
+        assert_eq!(pm, PackageManager::Maven);
+        assert!(
+            !pm.supports_apply(),
+            "Maven has no surgical bump CLI; apply should refuse"
+        );
+    }
+
+    #[test]
+    fn npm_upgrade_prefers_pnpm_when_pnpm_lock_present() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("pnpm-lock.yaml"), "").unwrap();
+        let upg = upg("axios", "1.15.2");
+        assert_eq!(
+            PackageManager::for_upgrade(&upg, dir.path()),
+            PackageManager::Pnpm
+        );
+    }
+
     fn upg_with_current(name: &str, current: &str, target: &str) -> Upgrade {
         Upgrade {
+            ecosystem: Ecosystem::Npm,
             name: name.into(),
             current_version: current.into(),
             target_version: target.into(),
