@@ -35,9 +35,8 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           # Same advisories documented in audit.toml at repo root.
-          # rustsec/audit-check@v2 does NOT auto-read audit.toml; the
-          # ignores have to be passed here verbatim. Keep both in sync.
-          ignore: |
-            RUSTSEC-2023-0071
-            RUSTSEC-2025-0119
-            RUSTSEC-2024-0370
+          # rustsec/audit-check@v2 does NOT auto-read audit.toml, and
+          # multi-line input is joined with newlines into a single
+          # --ignore arg (malformed). Pass as comma-separated. Keep
+          # both files in sync.
+          ignore: RUSTSEC-2023-0071,RUSTSEC-2025-0119,RUSTSEC-2024-0370
