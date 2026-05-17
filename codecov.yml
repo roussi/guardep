@@ -1,0 +1,35 @@
+# Codecov configuration for guardep.
+# See https://docs.codecov.com/docs/codecovyml-reference
+
+coverage:
+  precision: 1
+  round: down
+  range: "70...95"
+
+  status:
+    project:
+      default:
+        target: auto
+        # Drop the gate by 2 percentage points to absorb tiny
+        # fluctuations from line counts moving around. Real
+        # regressions still surface.
+        threshold: 2%
+        if_ci_failed: error
+    patch:
+      default:
+        target: 80%
+        threshold: 5%
+        if_ci_failed: error
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false
+
+ignore:
+  # Tests live with the code they cover, but the test bodies
+  # themselves should not count toward production coverage.
+  - "**/tests/**"
+  - "**/*_test.rs"
+  # Generated SARIF/CycloneDX templates and any future build.rs.
+  - "**/build.rs"
