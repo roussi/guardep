@@ -127,7 +127,14 @@ pub async fn run(path: &Path, target: FixTarget, apply: bool, yes: bool) -> Resu
     // Info-only signals like single-maintainer-alone, which carry no
     // version-bump remedy anyway).
     let report = audit::evaluate_project(path, guardep_core::FindingSeverity::Low, None).await?;
-    let plan = build_plan(&report, target);
+    let mut plan = build_plan(&report, target);
+    // Constraint-aware preflight: ask cargo whether each proposed
+    // Cargo upgrade fits the workspace's manifest constraints. Any
+    // rejection (e.g. `sigstore = "^0.13"` blocking tough@0.22.0)
+    // gets demoted from `upgrades` to `breaking` with the upstream
+    // diagnostic attached. Best-effort: missing cargo or IO errors
+    // leave the plan unchanged.
+    cargo_preflight(path, &mut plan);
     print_plan(&plan, target);
 
     if apply {
@@ -303,6 +310,12 @@ pub struct Upgrade {
     pub target_version: String,
     /// `n / total` findings cleared at this target.
     pub clears: String,
+    /// Populated when the upgrade was demoted from `upgrades` to
+    /// `breaking` by a constraint-aware preflight (e.g. a Cargo
+    /// downstream pin that refuses the target version). Carries the
+    /// upstream tool's diagnostic verbatim so the user sees the same
+    /// reason cargo / npm / mvn would print.
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -372,6 +385,7 @@ fn build_plan(report: &FindingsReport, target: FixTarget) -> Plan {
                     current_version: current,
                     target_version: v,
                     clears: "breaking".into(),
+                    note: None,
                 });
             }
             continue;
@@ -386,6 +400,7 @@ fn build_plan(report: &FindingsReport, target: FixTarget) -> Plan {
             current_version: current,
             target_version,
             clears,
+            note: None,
         };
         if targets.breaking {
             breaking.push(upg);
@@ -427,7 +442,7 @@ fn print_plan(plan: &Plan, target: FixTarget) {
 
     if !plan.breaking.is_empty() {
         println!(
-            "\n{} {} breaking upgrade(s) — major version bump required:",
+            "\n{} {} breaking upgrade(s) — manual intervention required:",
             "!".yellow(),
             plan.breaking.len()
         );
@@ -439,6 +454,14 @@ fn print_plan(plan: &Plan, target: FixTarget) {
                 u.target_version.yellow(),
                 u.clears.dimmed()
             );
+            if let Some(note) = &u.note {
+                // Preflight-rejected: print the upstream tool's exact
+                // constraint diagnostic so the user knows *why* this
+                // bump isn't reachable (e.g. "sigstore = '^0.13'
+                // requires tough = '^0.21'"). Indented to read as a
+                // subordinate hint, not its own line item.
+                println!("      {} {}", "↳".dimmed(), note.dimmed());
+            }
         }
     }
 
@@ -483,6 +506,113 @@ fn run_command(cwd: &Path, parts: &[String]) -> Result<()> {
         anyhow::bail!("`{}` exited {}", parts.join(" "), status);
     }
     Ok(())
+}
+
+/// Ask cargo whether each proposed Cargo upgrade actually fits the
+/// workspace's manifest constraints. Anything cargo refuses moves
+/// from `plan.upgrades` to `plan.breaking` with the rejection message
+/// attached as `note`. No-op when there are no Cargo upgrades or when
+/// cargo isn't on PATH; failures are non-fatal — at worst the user
+/// sees the same constraint error at `--apply` time instead of in the
+/// plan.
+fn cargo_preflight(project_root: &Path, plan: &mut Plan) {
+    let cargo_count = plan
+        .upgrades
+        .iter()
+        .filter(|u| u.ecosystem == Ecosystem::Cargo)
+        .count();
+    if cargo_count == 0 {
+        return;
+    }
+    if !project_root.join("Cargo.toml").exists() {
+        return;
+    }
+
+    // Test each Cargo candidate in isolation via
+    // `cargo update -p X --precise V --dry-run`. We use --dry-run so
+    // the user's real lockfile is never touched. Per-upgrade rather
+    // than batched because a single rejection in a batched call would
+    // taint the whole pass and we want one diagnostic per candidate.
+    apply_preflight_outcomes(plan, |upg| {
+        cargo_dry_run_precise(project_root, &upg.name, &upg.target_version)
+    });
+}
+
+/// Apply per-upgrade preflight outcomes to a plan. Extracted so the
+/// demotion logic is unit-testable without shelling out to cargo.
+fn apply_preflight_outcomes<F>(plan: &mut Plan, mut check: F)
+where
+    F: FnMut(&Upgrade) -> PreflightOutcome,
+{
+    let mut accepted: Vec<Upgrade> = Vec::with_capacity(plan.upgrades.len());
+    let mut newly_breaking: Vec<Upgrade> = Vec::new();
+    let original = std::mem::take(&mut plan.upgrades);
+
+    for upg in original {
+        if upg.ecosystem != Ecosystem::Cargo {
+            accepted.push(upg);
+            continue;
+        }
+        match check(&upg) {
+            PreflightOutcome::Accepted | PreflightOutcome::Unknown => accepted.push(upg),
+            PreflightOutcome::Rejected(reason) => {
+                let mut demoted = upg;
+                demoted.clears = "breaking".into();
+                demoted.note = Some(reason);
+                newly_breaking.push(demoted);
+            }
+        }
+    }
+
+    plan.upgrades = accepted;
+    plan.breaking.extend(newly_breaking);
+}
+
+enum PreflightOutcome {
+    Accepted,
+    /// Cargo refused the bump; payload is the upstream stderr excerpt.
+    Rejected(String),
+    /// Couldn't reach a verdict (cargo missing, IO error, etc.).
+    /// Treated as Accepted upstream — fail-open at plan time.
+    Unknown,
+}
+
+fn cargo_dry_run_precise(project_root: &Path, name: &str, version: &str) -> PreflightOutcome {
+    // Scrub `~/.guardep/bin` from PATH so we don't re-enter our own
+    // shim during the preflight — that would just call us back and
+    // produce shim diagnostics instead of cargo's constraint chain.
+    let output = Command::new("cargo")
+        .arg("update")
+        .arg("--package")
+        .arg(name)
+        .arg("--precise")
+        .arg(version)
+        .arg("--dry-run")
+        .current_dir(project_root)
+        .env("PATH", guardep_core::resolver::scrub_shim_from_path())
+        .output();
+    let output = match output {
+        Ok(o) => o,
+        Err(_) => return PreflightOutcome::Unknown,
+    };
+    if output.status.success() {
+        return PreflightOutcome::Accepted;
+    }
+    // Cargo prints the constraint chain to stderr. Trim hard so the
+    // plan stays readable; the full message is still available at
+    // apply time.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reason = stderr
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if reason.is_empty() {
+        PreflightOutcome::Unknown
+    } else {
+        PreflightOutcome::Rejected(reason)
+    }
 }
 
 #[cfg(test)]
@@ -569,6 +699,7 @@ mod tests {
             current_version: "0.0.0".into(),
             target_version: version.into(),
             clears: "1/1".into(),
+            note: None,
         }
     }
 
@@ -579,6 +710,7 @@ mod tests {
             current_version: current.into(),
             target_version: target.into(),
             clears: "1/1".into(),
+            note: None,
         }
     }
 
@@ -670,6 +802,7 @@ mod tests {
             current_version: current.into(),
             target_version: target.into(),
             clears: "1/1".into(),
+            note: None,
         }
     }
 
@@ -696,5 +829,72 @@ mod tests {
         assert!(out.contains("\"^1.0.5\""));
         assert!(out.contains("\"4.17.20\""));
         assert!(out.contains("\"name\": \"foo\""));
+    }
+
+    fn plan_with(upgrades: Vec<Upgrade>) -> Plan {
+        Plan {
+            upgrades,
+            manual: Vec::new(),
+            breaking: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn preflight_rejected_cargo_upgrade_moves_to_breaking_with_note() {
+        let mut plan = plan_with(vec![upg_eco(Ecosystem::Cargo, "tough", "0.21.0", "0.22.0")]);
+        apply_preflight_outcomes(&mut plan, |_| {
+            PreflightOutcome::Rejected("required by sigstore = \"^0.13\"".into())
+        });
+        assert!(
+            plan.upgrades.is_empty(),
+            "rejected upgrade must leave the upgrades list"
+        );
+        assert_eq!(plan.breaking.len(), 1);
+        assert_eq!(plan.breaking[0].name, "tough");
+        assert_eq!(plan.breaking[0].clears, "breaking");
+        assert_eq!(
+            plan.breaking[0].note.as_deref(),
+            Some("required by sigstore = \"^0.13\"")
+        );
+    }
+
+    #[test]
+    fn preflight_accepted_cargo_upgrade_stays_in_upgrades() {
+        let mut plan = plan_with(vec![upg_eco(Ecosystem::Cargo, "tough", "0.21.0", "0.22.0")]);
+        apply_preflight_outcomes(&mut plan, |_| PreflightOutcome::Accepted);
+        assert_eq!(plan.upgrades.len(), 1);
+        assert!(plan.breaking.is_empty());
+        assert!(plan.upgrades[0].note.is_none());
+    }
+
+    #[test]
+    fn preflight_unknown_outcome_is_fail_open() {
+        // Cargo not on PATH / IO error: we keep the upgrade in
+        // `upgrades` rather than silently dropping it. Worst case the
+        // user sees the same error at `--apply` time.
+        let mut plan = plan_with(vec![upg_eco(Ecosystem::Cargo, "tough", "0.21.0", "0.22.0")]);
+        apply_preflight_outcomes(&mut plan, |_| PreflightOutcome::Unknown);
+        assert_eq!(plan.upgrades.len(), 1);
+        assert!(plan.breaking.is_empty());
+    }
+
+    #[test]
+    fn preflight_skips_non_cargo_upgrades() {
+        // Npm upgrades must pass through untouched even if the
+        // checker would have rejected them — the cargo preflight is
+        // not authoritative for other ecosystems.
+        let mut plan = plan_with(vec![
+            upg_eco(Ecosystem::Npm, "axios", "1.0.0", "1.0.5"),
+            upg_eco(Ecosystem::Cargo, "tough", "0.21.0", "0.22.0"),
+        ]);
+        let mut calls = 0usize;
+        apply_preflight_outcomes(&mut plan, |upg| {
+            calls += 1;
+            assert_eq!(upg.ecosystem, Ecosystem::Cargo);
+            PreflightOutcome::Accepted
+        });
+        assert_eq!(calls, 1, "checker must only see Cargo upgrades");
+        assert_eq!(plan.upgrades.len(), 2);
+        assert!(plan.breaking.is_empty());
     }
 }

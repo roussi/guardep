@@ -18,7 +18,7 @@ pub trait Resolver {
 
 // PATH minus `~/.guardep/bin` so subprocess invocations of `npm`/`mvn`
 // don't re-enter the shim and recurse into another guardep audit.
-fn scrub_shim_from_path() -> std::ffi::OsString {
+pub fn scrub_shim_from_path() -> std::ffi::OsString {
     let home = std::env::var_os("HOME").unwrap_or_default();
     let mut shim_dir = std::path::PathBuf::from(&home);
     shim_dir.push(".guardep");
