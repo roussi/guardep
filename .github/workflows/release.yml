@@ -14,6 +14,12 @@ env:
 jobs:
   build:
     name: build (${{ matrix.target }})
+    # id-token: write is required for cosign keyless signing; the
+    # OIDC token is exchanged with Fulcio for a short-lived cert
+    # tied to this workflow's identity.
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -101,6 +107,40 @@ jobs:
           Compress-Archive -Path $staging -DestinationPath "$staging.zip"
           (Get-FileHash "$staging.zip" -Algorithm SHA256).Hash | Out-File "$staging.zip.sha256"
 
+      - name: Install cosign
+        # Keyless signing uses the runner's GitHub OIDC token to get
+        # a short-lived Fulcio cert. No long-lived key material; the
+        # signing identity is the workflow itself (repo + ref + job).
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Sign artifact (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          VERSION="${TAG#v}"
+          STAGING="guardep-${VERSION}-${TARGET}"
+          cosign sign-blob --yes \
+            --output-signature "${STAGING}.tar.gz.sig" \
+            --output-certificate "${STAGING}.tar.gz.pem" \
+            "${STAGING}.tar.gz"
+
+      - name: Sign artifact (zip)
+        if: matrix.archive == 'zip'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          VERSION="${TAG#v}"
+          STAGING="guardep-${VERSION}-${TARGET}"
+          cosign sign-blob --yes \
+            --output-signature "${STAGING}.zip.sig" \
+            --output-certificate "${STAGING}.zip.pem" \
+            "${STAGING}.zip"
+
       - name: Upload artifact
         uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
         with:
@@ -108,8 +148,12 @@ jobs:
           path: |
             guardep-*.tar.gz
             guardep-*.tar.gz.sha256
+            guardep-*.tar.gz.sig
+            guardep-*.tar.gz.pem
             guardep-*.zip
             guardep-*.zip.sha256
+            guardep-*.zip.sig
+            guardep-*.zip.pem
           if-no-files-found: error
 
   publish:
@@ -179,8 +223,12 @@ jobs:
           files: |
             dist/guardep-*.tar.gz
             dist/guardep-*.tar.gz.sha256
+            dist/guardep-*.tar.gz.sig
+            dist/guardep-*.tar.gz.pem
             dist/guardep-*.zip
             dist/guardep-*.zip.sha256
+            dist/guardep-*.zip.sig
+            dist/guardep-*.zip.pem
           generate_release_notes: true
           append_body: true
           body: ${{ steps.install_snippet.outputs.body }}
