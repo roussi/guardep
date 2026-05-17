@@ -28,12 +28,7 @@ pub async fn dispatch(tool: &str, args: &[String]) -> Result<()> {
     // Maven goals can be chained: `mvn clean install -DskipTests`.
     // Walk every positional arg; if any matches an intercepted phase
     // we audit before forwarding.
-    let triggers: Vec<&str> = args
-        .iter()
-        .filter(|a| !a.starts_with('-'))
-        .filter(|a| INTERCEPTED_PHASES.contains(&a.as_str()))
-        .map(|s| s.as_str())
-        .collect();
+    let triggers = mvn_triggers(args);
 
     if triggers.is_empty() {
         return passthrough(tool, args);
@@ -111,4 +106,71 @@ fn run_real(tool: &str, args: &[String]) -> Result<()> {
     let real: PathBuf = locate_real_binary(tool)?;
     let status = std::process::Command::new(real).args(args).status()?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/// Lifecycle phases in the invocation that should trigger an audit.
+/// Empty when none of `install`/`package`/`verify` is present.
+fn mvn_triggers(args: &[String]) -> Vec<&str> {
+    args.iter()
+        .filter(|a| !a.starts_with('-'))
+        .filter(|a| INTERCEPTED_PHASES.contains(&a.as_str()))
+        .map(|s| s.as_str())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn no_triggers_for_read_only_goals() {
+        assert!(mvn_triggers(&args(&["compile"])).is_empty());
+        assert!(mvn_triggers(&args(&["test"])).is_empty());
+        assert!(mvn_triggers(&args(&["clean"])).is_empty());
+        assert!(mvn_triggers(&args(&[])).is_empty());
+    }
+
+    #[test]
+    fn detects_install_phase() {
+        assert_eq!(mvn_triggers(&args(&["install"])), vec!["install"]);
+    }
+
+    #[test]
+    fn detects_chained_phases_in_order() {
+        // `mvn clean install` should produce only the lifecycle hit.
+        assert_eq!(mvn_triggers(&args(&["clean", "install"])), vec!["install"]);
+        // `mvn package verify` yields both, in encounter order.
+        assert_eq!(
+            mvn_triggers(&args(&["package", "verify"])),
+            vec!["package", "verify"],
+        );
+    }
+
+    #[test]
+    fn ignores_system_properties_and_profile_flags() {
+        let values = args(&["-DskipTests", "-Pprod", "install"]);
+        assert_eq!(mvn_triggers(&values), vec!["install"]);
+    }
+
+    #[test]
+    fn ignores_phase_in_property_value() {
+        // `-Dfoo=install` must not be treated as the install phase.
+        let values = args(&["-Dfoo=install", "test"]);
+        assert!(mvn_triggers(&values).is_empty());
+    }
+
+    #[test]
+    fn ignores_unrelated_positional_args() {
+        // Goals like `dependency:tree` are passthrough.
+        assert!(mvn_triggers(&args(&["dependency:tree"])).is_empty());
+        // Mixed: `install` is positional, plugin invocation is not.
+        assert_eq!(
+            mvn_triggers(&args(&["dependency:tree", "install"])),
+            vec!["install"],
+        );
+    }
 }

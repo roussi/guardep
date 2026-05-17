@@ -1293,6 +1293,7 @@ dependencies = [
  "guardep-core",
  "indicatif",
  "owo-colors",
+ "rusqlite",
  "semver",
  "serde",
  "serde_json",

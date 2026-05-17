@@ -12,7 +12,14 @@ mod npm;
 /// AND to `install_shims::TOOLS`.
 pub fn detect_invocation() -> Option<String> {
     let arg0 = std::env::args().next()?;
-    let name = Path::new(&arg0).file_name()?.to_str()?.to_string();
+    tool_from_arg0(&arg0)
+}
+
+/// Pure form of `detect_invocation`: returns the shim target when
+/// `arg0`'s basename matches one of the wired package managers. Split
+/// out so dispatch is testable without manipulating `std::env::args`.
+pub(crate) fn tool_from_arg0(arg0: &str) -> Option<String> {
+    let name = Path::new(arg0).file_name()?.to_str()?.to_string();
     match name.as_str() {
         "npm" | "pnpm" | "yarn" | "mvn" | "cargo" => Some(name),
         _ => None,
@@ -79,4 +86,47 @@ pub fn locate_real_binary(tool: &str) -> Result<std::path::PathBuf> {
         }
     }
     anyhow::bail!("could not locate real `{tool}` on PATH (excluding shim dir)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_bare_npm_basename() {
+        assert_eq!(tool_from_arg0("npm").as_deref(), Some("npm"));
+    }
+
+    #[test]
+    fn detects_absolute_path_to_pnpm() {
+        assert_eq!(
+            tool_from_arg0("/home/u/.guardep/bin/pnpm").as_deref(),
+            Some("pnpm")
+        );
+    }
+
+    #[test]
+    fn detects_each_wired_tool() {
+        for tool in ["npm", "pnpm", "yarn", "mvn", "cargo"] {
+            let arg0 = format!("/usr/local/bin/{tool}");
+            assert_eq!(tool_from_arg0(&arg0).as_deref(), Some(tool));
+        }
+    }
+
+    #[test]
+    fn returns_none_for_real_guardep_binary() {
+        assert!(tool_from_arg0("/usr/local/bin/guardep").is_none());
+        assert!(tool_from_arg0("target/release/guardep").is_none());
+    }
+
+    #[test]
+    fn returns_none_for_unwired_tools() {
+        assert!(tool_from_arg0("gradle").is_none());
+        assert!(tool_from_arg0("pip").is_none());
+    }
+
+    #[test]
+    fn returns_none_for_empty_arg0() {
+        assert!(tool_from_arg0("").is_none());
+    }
 }

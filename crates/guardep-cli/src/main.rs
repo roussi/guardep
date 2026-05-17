@@ -487,3 +487,81 @@ async fn main() -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_format_maps_to_audit_format() {
+        assert_eq!(
+            commands::audit::Format::from(OutputFormat::Table),
+            commands::audit::Format::Table
+        );
+        assert_eq!(
+            commands::audit::Format::from(OutputFormat::Json),
+            commands::audit::Format::Json
+        );
+        assert_eq!(
+            commands::audit::Format::from(OutputFormat::Cyclonedx),
+            commands::audit::Format::CycloneDx
+        );
+        assert_eq!(
+            commands::audit::Format::from(OutputFormat::Sarif),
+            commands::audit::Format::Sarif
+        );
+    }
+
+    #[test]
+    fn fail_on_arg_maps_to_audit_fail_on() {
+        assert_eq!(
+            commands::audit::FailOn::from(FailOnArg::Never),
+            commands::audit::FailOn::Never
+        );
+        assert_eq!(
+            commands::audit::FailOn::from(FailOnArg::Warn),
+            commands::audit::FailOn::Warn
+        );
+        assert_eq!(
+            commands::audit::FailOn::from(FailOnArg::Block),
+            commands::audit::FailOn::Block
+        );
+    }
+
+    #[test]
+    fn fix_target_arg_maps_to_fix_target() {
+        assert_eq!(
+            commands::fix::FixTarget::from(FixTargetArg::Safe),
+            commands::fix::FixTarget::Safe
+        );
+        assert_eq!(
+            commands::fix::FixTarget::from(FixTargetArg::Min),
+            commands::fix::FixTarget::Min
+        );
+    }
+
+    #[test]
+    fn severity_arg_maps_to_finding_severity() {
+        use guardep_core::FindingSeverity;
+        assert_eq!(
+            FindingSeverity::from(SeverityArg::Info),
+            FindingSeverity::Info
+        );
+        assert_eq!(
+            FindingSeverity::from(SeverityArg::Low),
+            FindingSeverity::Low
+        );
+        assert_eq!(
+            FindingSeverity::from(SeverityArg::Medium),
+            FindingSeverity::Medium
+        );
+        assert_eq!(
+            FindingSeverity::from(SeverityArg::High),
+            FindingSeverity::High
+        );
+        assert_eq!(
+            FindingSeverity::from(SeverityArg::Critical),
+            FindingSeverity::Critical
+        );
+    }
+}

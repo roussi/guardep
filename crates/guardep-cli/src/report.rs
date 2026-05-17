@@ -737,4 +737,214 @@ mod tests {
         assert!(t.safe.is_none());
         assert!(t.cross_major_fallback.is_none());
     }
+
+    fn mk_with(
+        name: &str,
+        version: &str,
+        severity: FindingSeverity,
+        action: Action,
+        kind: FindingKind,
+    ) -> ScoredFinding {
+        ScoredFinding {
+            finding: Finding {
+                package: PackageRef::new(Ecosystem::Npm, name, version),
+                kind,
+                id: format!("ID-{name}-{version}"),
+                aliases: vec![],
+                summary: String::new(),
+                severity,
+                fixed_versions: vec![],
+                references: vec![],
+                details: serde_json::Value::Null,
+            },
+            action,
+        }
+    }
+
+    #[test]
+    fn worst_action_promotes_block_over_warn() {
+        let a = mk_with(
+            "p",
+            "1",
+            FindingSeverity::Low,
+            Action::Allow,
+            FindingKind::RiskScore,
+        );
+        let b = mk_with(
+            "p",
+            "1",
+            FindingSeverity::High,
+            Action::Block,
+            FindingKind::Vulnerability,
+        );
+        let c = mk_with(
+            "p",
+            "1",
+            FindingSeverity::Medium,
+            Action::Warn,
+            FindingKind::Vulnerability,
+        );
+        assert_eq!(worst_action(&[&a, &b, &c]), Action::Block);
+    }
+
+    #[test]
+    fn worst_action_defaults_to_allow_for_empty_input() {
+        assert_eq!(worst_action(&[]), Action::Allow);
+    }
+
+    #[test]
+    fn max_severity_picks_highest() {
+        let lo = mk_with(
+            "p",
+            "1",
+            FindingSeverity::Low,
+            Action::Allow,
+            FindingKind::RiskScore,
+        );
+        let hi = mk_with(
+            "p",
+            "1",
+            FindingSeverity::Critical,
+            Action::Block,
+            FindingKind::Malware,
+        );
+        let mid = mk_with(
+            "p",
+            "1",
+            FindingSeverity::Medium,
+            Action::Warn,
+            FindingKind::Vulnerability,
+        );
+        assert_eq!(max_severity(&[&lo, &mid, &hi]), FindingSeverity::Critical);
+    }
+
+    #[test]
+    fn max_severity_unknown_for_empty_input() {
+        assert_eq!(max_severity(&[]), FindingSeverity::Unknown);
+    }
+
+    #[test]
+    fn worst_class_promotes_malware_kinds() {
+        let cve = mk_with(
+            "p",
+            "1",
+            FindingSeverity::Medium,
+            Action::Warn,
+            FindingKind::Vulnerability,
+        );
+        let mal = mk_with(
+            "p",
+            "1",
+            FindingSeverity::Critical,
+            Action::Block,
+            FindingKind::Malware,
+        );
+        // Malware kinds always escalate to the Malware display class.
+        assert_eq!(worst_class(&[&cve, &mal]), DisplayClass::Malware);
+        // Without any malware kind the class stays Cve.
+        assert_eq!(worst_class(&[&cve]), DisplayClass::Cve);
+    }
+
+    #[test]
+    fn group_by_package_groups_same_pkg_version_into_one_bucket() {
+        let a = mk_with(
+            "lodash",
+            "4.17.20",
+            FindingSeverity::High,
+            Action::Warn,
+            FindingKind::Vulnerability,
+        );
+        let b = mk_with(
+            "lodash",
+            "4.17.20",
+            FindingSeverity::High,
+            Action::Warn,
+            FindingKind::Vulnerability,
+        );
+        let c = mk_with(
+            "axios",
+            "1.0.0",
+            FindingSeverity::Medium,
+            Action::Warn,
+            FindingKind::Vulnerability,
+        );
+        let groups = group_by_package(&[&a, &b, &c]);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups.get("lodash@4.17.20").map(|v| v.len()), Some(2));
+        assert_eq!(groups.get("axios@1.0.0").map(|v| v.len()), Some(1));
+    }
+
+    #[test]
+    fn print_verdict_on_empty_report_prints_ok() {
+        // We can't capture stdout from a unit test cleanly, but we can
+        // at least exercise the empty-report branch and assert it
+        // returns without panicking. Coverage is the secondary win.
+        let report = FindingsReport { items: vec![] };
+        print_verdict(&report, false);
+        print_verdict(&report, true);
+    }
+
+    #[test]
+    fn print_verdict_on_warning_report_does_not_panic() {
+        let report = FindingsReport {
+            items: vec![mk_with(
+                "lodash",
+                "4.17.20",
+                FindingSeverity::High,
+                Action::Warn,
+                FindingKind::Vulnerability,
+            )],
+        };
+        // Exercises the print_expanded path + summary including warn.
+        print_verdict(&report, false);
+        // Collapsed path with one finding.
+        print_verdict(&report, true);
+    }
+
+    #[test]
+    fn print_verdict_on_block_report_does_not_panic() {
+        let report = FindingsReport {
+            items: vec![
+                mk_with(
+                    "evil",
+                    "1.0.0",
+                    FindingSeverity::Critical,
+                    Action::Block,
+                    FindingKind::Malware,
+                ),
+                mk_with(
+                    "lodash",
+                    "4.17.20",
+                    FindingSeverity::Medium,
+                    Action::Warn,
+                    FindingKind::Vulnerability,
+                ),
+            ],
+        };
+        print_verdict(&report, false);
+        print_verdict(&report, true);
+    }
+
+    #[test]
+    fn print_json_round_trips_through_serde() {
+        let report = FindingsReport {
+            items: vec![mk_with(
+                "lodash",
+                "4.17.20",
+                FindingSeverity::High,
+                Action::Warn,
+                FindingKind::Vulnerability,
+            )],
+        };
+        // print_json writes to stdout; we just want the serialization
+        // path to execute without panicking and the function to return
+        // Ok. Both modes (expanded + collapsed) cover different branches.
+        print_json(&report, false).unwrap();
+        print_json(&report, true).unwrap();
+
+        // Empty report exercises the early `deduped().is_empty()` paths.
+        let empty = FindingsReport { items: vec![] };
+        print_json(&empty, false).unwrap();
+        print_json(&empty, true).unwrap();
+    }
 }

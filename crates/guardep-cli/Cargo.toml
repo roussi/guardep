@@ -41,3 +41,8 @@ chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Used by cache prune tests to backdate `fetched_at` deterministically.
+# Already a workspace dep through `guardep-core`; reusing avoids the
+# only alternative (a sleep-based fixture or a test-only public API on
+# `KvCache`).
+rusqlite.workspace = true
