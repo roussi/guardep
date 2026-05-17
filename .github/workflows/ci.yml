@@ -56,6 +56,38 @@ jobs:
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace --all-targets
 
+  coverage:
+    name: coverage (ubuntu)
+    runs-on: ubuntu-latest
+    # Coverage runs on Linux only — running on macos + windows would
+    # triple Codecov uploads without adding signal, since the code
+    # paths exercised are platform-independent (resolvers, evaluators,
+    # CLI dispatch). Network-gated integration tests stay disabled
+    # in this job so coverage numbers are reproducible.
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c # v2.7.7
+        with:
+          key: coverage
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "20"
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@9903ab6feadaec33945de535fe9d181b91802a55 # v2.50.0
+        with:
+          tool: cargo-llvm-cov
+      - name: Run tests with coverage
+        run: cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@af09b5e394c93991b95a5e7646aeb90c1917f78f # v5.5.1
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   build-release:
     name: release build (${{ matrix.os }})
     needs: [fmt, clippy, test]
