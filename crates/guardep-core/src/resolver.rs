@@ -762,6 +762,124 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         let err = resolver.resolve(dir.path()).unwrap_err();
         assert!(format!("{err}").contains("Cargo.toml not found"));
     }
+
+    #[test]
+    fn seed_workspace_members_copies_literal_paths() {
+        let src = TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/foo\", \"crates/bar\"]\n",
+        )
+        .unwrap();
+        for name in ["foo", "bar"] {
+            let dir = src.path().join("crates").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
+            )
+            .unwrap();
+        }
+        let dst = TempDir::new().unwrap();
+        super::seed_workspace_members(src.path(), dst.path()).unwrap();
+        for name in ["foo", "bar"] {
+            assert!(
+                dst.path()
+                    .join("crates")
+                    .join(name)
+                    .join("Cargo.toml")
+                    .exists(),
+                "member manifest missing for {name}"
+            );
+            assert!(
+                dst.path()
+                    .join("crates")
+                    .join(name)
+                    .join("src/lib.rs")
+                    .exists(),
+                "placeholder lib.rs missing for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn seed_workspace_members_expands_trailing_star_glob() {
+        let src = TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        for name in ["alpha", "beta", "gamma"] {
+            let dir = src.path().join("crates").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
+            )
+            .unwrap();
+        }
+        // A non-member sibling without Cargo.toml — must be ignored.
+        std::fs::create_dir_all(src.path().join("crates/not-a-crate")).unwrap();
+
+        let dst = TempDir::new().unwrap();
+        super::seed_workspace_members(src.path(), dst.path()).unwrap();
+        for name in ["alpha", "beta", "gamma"] {
+            assert!(
+                dst.path()
+                    .join("crates")
+                    .join(name)
+                    .join("Cargo.toml")
+                    .exists(),
+                "glob-expanded member missing for {name}"
+            );
+        }
+        assert!(
+            !dst.path().join("crates/not-a-crate/Cargo.toml").exists(),
+            "directory without Cargo.toml should not be seeded"
+        );
+    }
+
+    #[test]
+    fn seed_workspace_members_honors_excludes() {
+        let src = TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/keep\", \"crates/skip\"]\n\
+             exclude = [\"crates/skip\"]\n",
+        )
+        .unwrap();
+        for name in ["keep", "skip"] {
+            let dir = src.path().join("crates").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
+            )
+            .unwrap();
+        }
+        let dst = TempDir::new().unwrap();
+        super::seed_workspace_members(src.path(), dst.path()).unwrap();
+        assert!(dst.path().join("crates/keep/Cargo.toml").exists());
+        assert!(!dst.path().join("crates/skip/Cargo.toml").exists());
+    }
+
+    #[test]
+    fn seed_workspace_members_no_op_for_non_workspace_manifest() {
+        let src = TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("Cargo.toml"),
+            "[package]\nname = \"single\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let dst = TempDir::new().unwrap();
+        super::seed_workspace_members(src.path(), dst.path()).unwrap();
+        // Nothing under dst — function should have done nothing.
+        assert!(
+            std::fs::read_dir(dst.path()).unwrap().next().is_none(),
+            "non-workspace manifest must not create any files"
+        );
+    }
 }
 
 // ── Maven dependency-tree resolver ──────────────────────────────────────
@@ -1142,15 +1260,25 @@ impl Resolver for CargoDryRunResolver {
                     std::fs::copy(&lock, workdir.path().join("Cargo.lock"))
                         .context("seed temp dir with existing Cargo.lock")?;
                 }
-                // `cargo add` resolves dev-deps from `[lib]` / `[bin]`
-                // entries in the manifest if they reference paths under
-                // `src/`. We don't copy src/, so write a minimal lib.rs
-                // placeholder so cargo doesn't error out on a missing
-                // crate root. The placeholder is enough for resolution.
+                // `cargo add` / `cargo update` resolves dev-deps from
+                // `[lib]` / `[bin]` entries in the manifest if they
+                // reference paths under `src/`. We don't copy src/, so
+                // write a minimal lib.rs placeholder so cargo doesn't
+                // error out on a missing crate root. The placeholder is
+                // enough for resolution.
                 let src = workdir.path().join("src");
                 std::fs::create_dir_all(&src).context("create src/ in temp dir")?;
                 std::fs::write(src.join("lib.rs"), "")
                     .context("write placeholder src/lib.rs in temp dir")?;
+
+                // If the root manifest is a workspace, cargo refuses to
+                // resolve anything until every `[workspace].members` path
+                // exists with a valid Cargo.toml. We copy each member's
+                // manifest into the matching tempdir path (plus an empty
+                // src/lib.rs to satisfy crate-root checks). We do NOT
+                // copy member sources — resolution doesn't need them.
+                seed_workspace_members(project_root, workdir.path())
+                    .context("seed workspace members in temp dir")?;
                 workdir.path().to_path_buf()
             }
             CargoDryRunAction::Install => {
@@ -1231,6 +1359,98 @@ impl Resolver for CargoDryRunResolver {
         }
         Ok(pkgs)
     }
+}
+
+/// Copy every workspace-member `Cargo.toml` from `project_root` into
+/// the matching path under `tempdir`, with an empty `src/lib.rs` so
+/// cargo accepts each member as a valid crate. No-op when the root
+/// manifest has no `[workspace]` table.
+///
+/// Supports literal paths (`crates/foo`) and simple one-level globs
+/// (`crates/*`). Globs at deeper levels and `exclude = [...]` are
+/// honored on a best-effort basis. Failure is non-fatal at the caller
+/// level — it returns an Err that the caller wraps with context, and
+/// the shim ultimately fails open.
+fn seed_workspace_members(project_root: &Path, tempdir: &Path) -> Result<()> {
+    let raw = std::fs::read_to_string(project_root.join("Cargo.toml"))
+        .context("re-read root Cargo.toml to find workspace members")?;
+    let parsed: toml::Value = match toml::from_str(&raw) {
+        Ok(v) => v,
+        // Manifest is malformed for our purposes too; let cargo report
+        // the same error downstream rather than masking it here.
+        Err(_) => return Ok(()),
+    };
+    let workspace = match parsed.get("workspace").and_then(|w| w.as_table()) {
+        Some(w) => w,
+        None => return Ok(()),
+    };
+    let members = workspace
+        .get("members")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let excludes: std::collections::HashSet<String> = workspace
+        .get("exclude")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for pattern in members {
+        for rel_path in expand_workspace_pattern(project_root, &pattern) {
+            let rel_str = rel_path.to_string_lossy().to_string();
+            if excludes.contains(&rel_str) {
+                continue;
+            }
+            let src_manifest = project_root.join(&rel_path).join("Cargo.toml");
+            if !src_manifest.exists() {
+                continue;
+            }
+            let dst_dir = tempdir.join(&rel_path);
+            let dst_src = dst_dir.join("src");
+            std::fs::create_dir_all(&dst_src).with_context(|| {
+                format!("create workspace-member src dir {}", dst_src.display())
+            })?;
+            std::fs::copy(&src_manifest, dst_dir.join("Cargo.toml")).with_context(|| {
+                format!("copy workspace-member manifest {}", src_manifest.display())
+            })?;
+            std::fs::write(dst_src.join("lib.rs"), "")
+                .with_context(|| format!("write placeholder lib.rs for {}", rel_path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Expand a single `[workspace].members` entry into the matching
+/// relative paths under `project_root`. Handles literal paths and a
+/// trailing `*` segment (the common `crates/*` form). Anything more
+/// exotic falls through as a literal.
+fn expand_workspace_pattern(project_root: &Path, pattern: &str) -> Vec<std::path::PathBuf> {
+    // Cheap glob: if the pattern is exactly `<prefix>/*` we list
+    // direct children of <prefix>. That covers the conventional
+    // `members = ["crates/*"]` case without pulling in a glob crate.
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        let dir = project_root.join(prefix);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                let name = entry.file_name();
+                out.push(std::path::Path::new(prefix).join(name));
+            }
+        }
+        return out;
+    }
+    vec![std::path::PathBuf::from(pattern)]
 }
 
 /// Drop the leading subcommand and any args incompatible with our temp
