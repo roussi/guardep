@@ -43,7 +43,7 @@ wiremock = "0.6"
 sigstore = { version = "0.13", default-features = false, features = ["bundle", "sigstore-trust-root", "rustls-tls"] }
 swc_ecma_parser = "39"
 swc_ecma_ast = "23"
-swc_common = "21"
+swc_common = "23"
 swc_ecma_visit = "23"
 indicatif = "0.18"
 supports-color = "3"
